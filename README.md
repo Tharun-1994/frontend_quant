@@ -18,26 +18,21 @@ Frontend Quant is developed using:
 
 ## Architecture
 
-flowchart LR
-    A([🧑‍💻 User<br/>(Web Browser)])
-    B([⚛️ React Frontend<br/>(View Layer)])
-    C([🚀 FastAPI Backend<br/>(API & Business Logic)])
-    D([🗄️ MSSQL Database])
+<details> <summary>Click to expand</summary>
++---------------------+      +-----------------------+      +------------------------+      +---------------------+
+|      User           |----->|    React Frontend     |<---->|     FastAPI Backend    |<---->|       MsSql         |
+| (Web Browser)       |      |   (View Layer)        |      | (API & Business Logic) |      | (Data Persistence)  |
++---------------------+      +-----------------------+      +------------------------+      +---------------------+
+                                |        ^      ^                                               |    |    |    |
+                                |        |      |                                               |    |    |    V
+                                |        |      +------------Request Data-----------------------+    |    |  [Tables]
+                                |        |                                                            |    |  - Strategies
+                                |        +----------------Response Data------------------------+    |  - EquityHistory
+                                |                                                                    |  - TradeList
+                                +------------User Actions (View, Upload)------------------------>    |    (entry_date,
+                                                                                                     |     exit_date,
+                                                                                                     |     trade_type,
+                                                                                                     |     status)
+                                                                                                     |  - PortfolioMetrics
 
-    A -->|User Interaction| B
-    B -->|Fetch/Post Requests| C
-    C -->|SQL Queries| D
-    D -->|Query Results| C
-    C -->|JSON Response| B
-
-    subgraph 📂 Tables
-        T1[📋 Strategies]
-        T2[📈 EquityHistory]
-        T3[📄 TradeList<br/>(entry_date, exit_date, trade_type, status)]
-        T4[📊 PortfolioMetrics]
-    end
-
-    D --> T1
-    D --> T2
-    D --> T3
-    D --> T4
+</details>
