@@ -20,26 +20,26 @@ Frontend Quant is developed using:
 
 ```mermaid
 flowchart LR
-    User([User<br/>(Web Browser)])
-    Frontend([React Frontend<br/>(View Layer)])
-    Backend([FastAPI Backend<br/>(API & Business Logic)])
-    DB([MsSql<br/>(Data Persistence)])
+    A([🧑 User<br/>(Web Browser)])
+    B([⚛️ React Frontend<br/>(View Layer)])
+    C([🚀 FastAPI Backend<br/>(API & Logic)])
+    D([🗄️ MsSql<br/>(Database)])
 
-    User -->|User Actions| Frontend
-    Frontend -->|Request Data| Backend
-    Backend -->|DB Queries| DB
-    DB -->|Data| Backend
-    Backend -->|Response Data| Frontend
+    A -- User Actions --> B
+    B -- Request Data --> C
+    C -- DB Queries --> D
+    D -- Data --> C
+    C -- Response Data --> B
 
-    subgraph Tables [ ]
-        Strategies[Strategies]
-        EquityHistory[EquityHistory]
-        TradeList[TradeList<br/>(entry_date, exit_date, trade_type, status)]
-        PortfolioMetrics[PortfolioMetrics]
+    subgraph Tables [Tables]
+        T1[Strategies]
+        T2[EquityHistory]
+        T3[TradeList<br/>(entry_date, exit_date, trade_type, status)]
+        T4[PortfolioMetrics]
     end
 
-    DB --> Strategies
-    DB --> EquityHistory
-    DB --> TradeList
-    DB --> PortfolioMetrics
+    D --> T1
+    D --> T2
+    D --> T3
+    D --> T4
 ```
