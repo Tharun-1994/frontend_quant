@@ -18,19 +18,28 @@ Frontend Quant is developed using:
 
 ## Architecture
 
+```mermaid
+flowchart LR
+    User([User<br/>(Web Browser)])
+    Frontend([React Frontend<br/>(View Layer)])
+    Backend([FastAPI Backend<br/>(API & Business Logic)])
+    DB([MsSql<br/>(Data Persistence)])
 
-+---------------------+      +-----------------------+      +------------------------+      +---------------------+
-|      User           |----->|    React Frontend     |<---->|     FastAPI Backend    |<---->|       MsSql         |
-| (Web Browser)       |      |   (View Layer)        |      | (API & Business Logic) |      | (Data Persistence)  |
-+---------------------+      +-----------------------+      +------------------------+      +---------------------+
-                                |        ^      ^                                               |    |    |    |
-                                |        |      |                                               |    |    |    V
-                                |        |      +------------Request Data-----------------------+    |    |  [Tables]
-                                |        |                                                            |    |  - Strategies
-                                |        +----------------Response Data------------------------+    |  - EquityHistory
-                                |                                                                    |  - TradeList
-                                +------------User Actions (View, Upload)------------------------>    |    (entry_date,
-                                                                                                     |     exit_date,
-                                                                                                     |     trade_type,
-                                                                                                     |     status)
-                                                                                                     |  - PortfolioMetrics
+    User -->|User Actions| Frontend
+    Frontend -->|Request Data| Backend
+    Backend -->|DB Queries| DB
+    DB -->|Data| Backend
+    Backend -->|Response Data| Frontend
+
+    subgraph Tables [ ]
+        Strategies[Strategies]
+        EquityHistory[EquityHistory]
+        TradeList[TradeList<br/>(entry_date, exit_date, trade_type, status)]
+        PortfolioMetrics[PortfolioMetrics]
+    end
+
+    DB --> Strategies
+    DB --> EquityHistory
+    DB --> TradeList
+    DB --> PortfolioMetrics
+```
