@@ -18,9 +18,10 @@ Frontend Quant is developed using:
 
 ## Architecture
 
+
 +---------------------+      +-----------------------+      +------------------------+      +---------------------+
-|      User           |----->|    React Frontend     |<---->|     FastAPI Backend    |<---->|  MsSql     |
-| (Web Browser)       |      | (View Layer)          |      | (API & Business Logic) |      | (Data Persistence)  |
+|      User           |----->|    React Frontend     |<---->|     FastAPI Backend    |<---->|       MsSql         |
+| (Web Browser)       |      |   (View Layer)        |      | (API & Business Logic) |      | (Data Persistence)  |
 +---------------------+      +-----------------------+      +------------------------+      +---------------------+
                                 |        ^      ^                                               |    |    |    |
                                 |        |      |                                               |    |    |    V
@@ -33,4 +34,3 @@ Frontend Quant is developed using:
                                                                                                      |     trade_type,
                                                                                                      |     status)
                                                                                                      |  - PortfolioMetrics
-                                                                                                     +---------------------+
