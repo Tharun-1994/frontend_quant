@@ -10,6 +10,7 @@ class Rule(BaseModel):
 
 class StrategyRequest(BaseModel):
     strategy_name: str
+    rebalance: str
     universe: str
     slots: int
     capital: float
@@ -20,3 +21,10 @@ class StrategyRequest(BaseModel):
     entry_rules: List[Rule]
     exit_rules: List[Rule]
     ranking: str
+    stoploss_timing : str
+    takeprofit_timing: str
+    entry_timing : str
+    exit_timing: str
+    ranking_lookback : int
+    ranking_order: str
+
