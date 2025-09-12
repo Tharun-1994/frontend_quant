@@ -1,10 +1,10 @@
-from sqlalchemy import Column, Integer, String, Date, DECIMAL, DateTime, Text, Numeric
+from sqlalchemy import Column, Integer, String, Date, DECIMAL, DateTime, Text, Numeric, Float
 from sqlalchemy.inspection import inspect
 from decimal import Decimal
 from sqlalchemy.sql import func
 from app.database import Base
 import datetime
-
+from sqlalchemy.orm import Mapped, mapped_column
 class Strategy(Base):
     __tablename__ = "strategies"
 
@@ -28,6 +28,22 @@ class Strategy(Base):
     ranking_lookback = Column(Numeric(5, 2))
     ranking_order = Column(String, nullable=False)
     created_at = Column(DateTime, server_default=func.now())
+    min_quantity: Mapped[float] = mapped_column(Numeric(5, 2))
+    min_price: Mapped[float] = mapped_column(Float)
+    system_type = Column(String, nullable=False)
+    stoploss_type = Column(String, nullable=False)
+    takeprofit_type = Column(String, nullable=False)
+    order_type = Column(String, nullable=False)
+    limit_pct : Mapped[float] = mapped_column(Float)
+    atr_limit_lookback = Column(Numeric(18, 2))
+
+
+
+
+    @property
+    def strategy_name(self):
+        return self.name
+
 
     def __repr__(self):
         return (f"<Strategy(id={self.id}, name='{self.name}', universe='{self.universe}', "

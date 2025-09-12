@@ -13,6 +13,13 @@ class PriceDataLoader:
             f'{rebalance}_highs': pd.read_csv(PricePath.highs(self.base_path),index_col=['Date'],parse_dates=True),
             f'{rebalance}_lows': pd.read_csv(PricePath.lows(self.base_path),index_col=['Date'],parse_dates=True),
             f'{universe}_universe': pd.read_csv(PricePath.universe(f'{self.base_path}/{universe}'),index_col=['Date'],parse_dates=True),
+            f'{rebalance}_unadjusted_closes': pd.read_csv(PricePath.unadjustedCloses(self.base_path),index_col=['Date'],parse_dates=True),
+        }
+
+    def load_spy_close(self,rebalance=''):
+        return {
+            f'{rebalance}_closes_spy': pd.read_csv(PricePath.spy_closes(PricePath.index_path),
+                                                          index_col=['Date'], parse_dates=True)
         }
 
     def uploadCommonPath(self,price_data={}):
@@ -117,3 +124,10 @@ class PriceDataLoader:
 
 
         return trade_date_list
+
+
+
+    # def crsi_exploration(self):
+    #     print("CRSI")
+        # CRSI = CRSI(prices=pricedata.daily_closes, RSI_length=strategy_params["crsi_length"], UpDown_length=2,
+        #             ROC_length=100)

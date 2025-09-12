@@ -892,8 +892,8 @@ class IndicatorCalculator:
     ########################### Charlie's Additions
     @staticmethod
     @register
-    def SMA(df, lookback=200):
-             return df.rolling(window=lookback).mean()
+    def SMA(prices, lookback=200):
+             return prices.rolling(window=lookback).mean()
 
     @staticmethod
     @register

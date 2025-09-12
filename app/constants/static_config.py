@@ -4,22 +4,21 @@ from dateutil.rrule import DAILY
 UNIVERSES = {
     "sp500": "S&P 500",
     "r3000": "Russell 3000",
-    "liquid_500": "Liquid 500"
+    "liquid500": "Liquid 500"
 }
 UNIVERSES_Codes = {
     "S&P 500": "sp500",
     "Russell 3000": "r3000",
-    "Liquid 500": "liquid_500"
+    "Liquid 500": "liquid500"
 }
 
 # Indicators (for rule building)
 INDICATORS = {
     "rsi": "RSI",
-    "momentum": "Momentum",
     "adx": "ADX",
-    "volatility": "Volatility",
-    "sma": "SMA 50",
-    "hv": "Historical Volatility"
+    "sma": "SMA",
+    "hv": "Historical Volatility",
+    "atr": "Avg True Range",
 }
 
 OPERATORS = {
@@ -33,10 +32,13 @@ CONNECTORS = {
     "||": "OR"
 }
 
-FUNCTION_MAPPER ={
+FUNCTION_MAPPER = {
     "rsi": "RSI",
     "adx":"ADX",
     "hv":"HistoricVolatility",
+    "atr":"AvgTrueRange",
+    "sma":"SMA",
+    "relative_momentum": "ROC"
 }
 
 REBALACE = {
@@ -46,17 +48,31 @@ REBALACE = {
 }
 
 SIGNAL_TIMING = {
-    "open" : "OPEN",
-    "close" : "CLOSE"
+    "open" : "Next Day Morning",
+    # "close" : "Today Close"
 }
 
 RISK_TIMING = {
-    "open" : "EOD",
-    "close" : "INTRADAY"
+    "eod" : "EOD",
+    "intraday" : "INTRADAY"
 }
 RANKING_ORDERS = {
     "asc":"Ascending",
     "desc" :"Descending"
+}
+
+SYSTEM_TYPE = {
+    "long":"LONG",
+    # "short":"SHORT"
+}
+
+STOPLOSS_TYPE={
+    "nrml": "NORMAL",
+    "atr_based": "ATR_BASED"
+}
+TAKEPROFIT_TYPE ={
+    "nrml": "NORMAL",
+    "atr_based": "ATR_BASED"
 }
 
 SPY_RETURNS = {

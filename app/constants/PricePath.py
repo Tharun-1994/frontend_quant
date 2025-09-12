@@ -2,7 +2,14 @@
 class PricePath:
 
     commonBacktestingPath = r'C:\Tharun\Projects\backtest_data\inputs'
+
+    # Universes Path
     sp500base_path=r'C:\Tharun\Projects\backtest_data\universes\sp500'
+    liquid500base_path=r'C:\Tharun\Projects\backtest_data\universes\liquid500'
+    russell3000base_path=r'C:\Tharun\Projects\backtest_data\universes\russell3000'
+
+    index_path=r'C:\Tharun\Projects\backtest_data\universes\index'
+
     commonOutputPath = r'C:\Tharun\Projects\backtest_data\outputs'
 
     @staticmethod
@@ -40,4 +47,12 @@ class PricePath:
     @staticmethod
     def volumes(path):
         return f'{path}/daily_volumes.csv'
+
+    @staticmethod
+    def unadjustedCloses(path):
+        return f'{path}/daily_unadjusted.csv'
+
+    @staticmethod
+    def spy_closes(path):
+        return f'{path}/daily_closes_spy.csv'
 

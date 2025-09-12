@@ -9,6 +9,7 @@ class Rule(BaseModel):
     connector: Optional[str] = None
 
 class StrategyRequest(BaseModel):
+    id: int
     strategy_name: str
     rebalance: str
     universe: str
@@ -27,4 +28,15 @@ class StrategyRequest(BaseModel):
     exit_timing: str
     ranking_lookback : int
     ranking_order: str
+    min_quantity:int
+    min_price:float
+    system_type:str
+    stoploss_type : str
+    takeprofit_type : str
+
+    order_type: str
+    limit_pct: float
+    atr_limit_lookback: int
+
+    
 
