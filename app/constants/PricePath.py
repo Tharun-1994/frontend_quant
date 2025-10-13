@@ -1,7 +1,15 @@
+from app.constants.static_config import UNIVERSES_Codes
+
 
 class PricePath:
 
     commonBacktestingPath = r'C:\Tharun\Projects\backtest_data\inputs'
+
+
+
+    sp500BacktestingPath = f'{commonBacktestingPath}/sp500'
+    lq500BacktestingPath = f'{commonBacktestingPath}/liquid500'
+    r3000BacktestingPath = f'{commonBacktestingPath}/r3000'
 
     # Universes Path
     sp500base_path=r'C:\Tharun\Projects\backtest_data\universes\sp500'
@@ -13,8 +21,13 @@ class PricePath:
     commonOutputPath = r'C:\Tharun\Projects\backtest_data\outputs'
 
     @staticmethod
-    def getCommonPath():
-        return PricePath.commonBacktestingPath
+    def getBacktestInputPath(universe=""):
+        if universe == UNIVERSES_Codes['S&P 500']:
+            return PricePath.sp500BacktestingPath
+        elif universe == UNIVERSES_Codes['Liquid 500']:
+            return PricePath.lq500BacktestingPath
+        elif universe == UNIVERSES_Codes['Russell 3000']:
+            return PricePath.r3000BacktestingPath
 
     @staticmethod
     def getCommonOutputPath():

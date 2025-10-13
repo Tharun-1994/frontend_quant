@@ -2,6 +2,9 @@ from app.constants.PricePath import PricePath
 import pandas as pd
 import pandas_market_calendars as mcal
 
+from app.constants.static_config import UNIVERSES_Codes
+
+
 class PriceDataLoader:
     def __init__(self, base_path):
         self.base_path = base_path
@@ -22,10 +25,17 @@ class PriceDataLoader:
                                                           index_col=['Date'], parse_dates=True)
         }
 
-    def uploadCommonPath(self,price_data={}):
+    def uploadCommonPath(self,price_data={}, universe=""):
 
         for k in price_data.keys():
-            price_data[k].to_parquet(f'{PricePath.getCommonPath()}/{k}.parquet')
+
+            if 'universe' not in k and 'trading_dates' not in k and 'all_dates' not in k :
+                # print(k)
+                price_data[k] = price_data[k].astype("float32")
+            price_data[k].to_parquet(f'{PricePath.getBacktestInputPath(universe=universe)}/{k}.parquet')
+            # price_data[k].to_csv(f'{PricePath.getBacktestInputPath(universe=universe)}/{k}.csv')
+
+
 
 
     def get_trading_dates(self, start_trading=None, end_trading=None,

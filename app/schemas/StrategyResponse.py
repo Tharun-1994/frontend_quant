@@ -7,11 +7,15 @@ from typing import Optional, List
 
 class StrategyResponse(BaseModel):
     id: int
-    strategy_name: str
-    universe: str
-    slots: Optional[int]
-    capital: Optional[float]
-    created_at: datetime
+    name: str
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    rebalance: Optional[str] = None
+    created_at: Optional[datetime] = None
+    min_price: Optional[float] = None
+    min_quantity: Optional[float] = None
+    system_type: Optional[str] = None
+    market_regime_type: Optional[str] = None
 
 
 

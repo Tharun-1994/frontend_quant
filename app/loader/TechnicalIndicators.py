@@ -1047,7 +1047,7 @@ class IndicatorCalculator:
     @staticmethod
     @register
     def ROC(df, lookback=10):
-
+        df = df.astype("float32")
         return df.pct_change(periods = lookback, fill_method = 'pad', limit = None, freq=None)
 
     @staticmethod

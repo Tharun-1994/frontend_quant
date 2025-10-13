@@ -10,7 +10,13 @@ from starlette.responses import HTMLResponse
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.models import Strategy
+from app.models import *  # ensures both models are registered
+
+
+
+
+
+
 from app.routes.backtest import router as backtest_router
 from app.routes.equity_view import router as equity_router
 from app.constants.static_config import INDICATORS, UNIVERSES, OPERATORS, CONNECTORS, REBALACE, SIGNAL_TIMING, \
@@ -18,13 +24,21 @@ from app.constants.static_config import INDICATORS, UNIVERSES, OPERATORS, CONNEC
 import pandas as pd
 from app.database import get_db
 
-from typing import List, Dict, Any
 
+from typing import List, Dict, Any
+from app.database import engine, Base
 from app.schemas.StrategyResponse import StrategyResponse
 
 app = FastAPI()
+Base.metadata.create_all(bind=engine)
 app.include_router(backtest_router)
 app.include_router(equity_router)
+
+origins = [
+    "http://localhost:3000",  # Default for Create React App
+    "http://localhost:4000",  # Default for Vite/React
+    "http://127.0.0.1:3000", # Sometimes the browser uses the IP
+]
 
 app.add_middleware(
     CORSMiddleware,
@@ -63,50 +77,50 @@ async def new_strategy(request: Request):
     })
 
 
-@app.get("/", response_class=HTMLResponse)
-async def get_dashboard(request: Request, db: Session = Depends(get_db)):
-    # Query all strategies
-    strategies = db.query(Strategy).all()
-
-    # Pass list to template
-    return templates.TemplateResponse(
-        "dashboard.html",
-        {"request": request, "strategies": strategies}
-    )
+# @app.get("/", response_class=HTMLResponse)
+# async def get_dashboard(request: Request, db: Session = Depends(get_db)):
+#     # Query all strategies
+#     strategies = db.query(Strategy).all()
+#
+#     # Pass list to template
+#     return templates.TemplateResponse(
+#         "dashboard.html",
+#         {"request": request, "strategies": strategies}
+#     )
 
 
 @app.get("/api/strategies", response_model=List[StrategyResponse])
 async def get_strategies(db: Session = Depends(get_db)):
-    strategies = db.query(Strategy).all()
+    strategies = db.query(StrategyBucket).all()
 
     return strategies   # return ORM objects, not dicts/jsonable_encoder
 
 
 
-@app.get("/api/{strategy_id}/edit", response_class=HTMLResponse)
-async def edit_strategy(request: Request, strategy_id: int, db: Session = Depends(get_db)):
-    strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
-    if not strategy:
-        raise HTTPException(status_code=404, detail="Strategy not found")
-
-    strategy.entry_rules = parse_expression(strategy.entry_rules)
-    strategy.exit_rules = parse_expression(strategy.exit_rules)
-
-    return templates.TemplateResponse("index.html", {
-        "request": request,
-        "strategy": strategy,
-        "universes": UNIVERSES,
-        "indicators": INDICATORS,
-        "operators": OPERATORS,
-        "connectors": CONNECTORS,
-        "rebalance": REBALACE,
-        "signal_timing": SIGNAL_TIMING,
-        "risk_timing": RISK_TIMING,
-        "ranking_orders": RANKING_ORDERS,
-        "system_types": SYSTEM_TYPE,
-        "stoploss_types": STOPLOSS_TYPE,
-        "takeProfit_types": TAKEPROFIT_TYPE,
-    })
+# @app.get("/api/{strategy_id}/edit", response_class=HTMLResponse)
+# async def edit_strategy(request: Request, strategy_id: int, db: Session = Depends(get_db)):
+#     strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+#     if not strategy:
+#         raise HTTPException(status_code=404, detail="Strategy not found")
+#
+#     strategy.entry_rules = parse_expression(strategy.entry_rules)
+#     strategy.exit_rules = parse_expression(strategy.exit_rules)
+#
+#     return templates.TemplateResponse("index.html", {
+#         "request": request,
+#         "strategy": strategy,
+#         "universes": UNIVERSES,
+#         "indicators": INDICATORS,
+#         "operators": OPERATORS,
+#         "connectors": CONNECTORS,
+#         "rebalance": REBALACE,
+#         "signal_timing": SIGNAL_TIMING,
+#         "risk_timing": RISK_TIMING,
+#         "ranking_orders": RANKING_ORDERS,
+#         "system_types": SYSTEM_TYPE,
+#         "stoploss_types": STOPLOSS_TYPE,
+#         "takeProfit_types": TAKEPROFIT_TYPE,
+#     })
 
 @app.get("/test")
 async def convertion():
