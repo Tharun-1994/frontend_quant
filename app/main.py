@@ -124,10 +124,10 @@ async def get_strategies(db: Session = Depends(get_db)):
 
 @app.get("/test")
 async def convertion():
-    Equity = pd.read_json(r'C:\Tharun\Projects\backtest_data\outputs\Equity.json')
-    tradeList = pd.read_json(r'C:\Tharun\Projects\backtest_data\outputs\TradeList.json')
-    Equity.T.to_csv(r'C:\Tharun\Projects\backtest_data\outputs\Equity.csv')
-    tradeList.T.to_csv(r'C:\Tharun\Projects\backtest_data\outputs\TradeList.csv')
+    Equity = pd.read_json(r'C:\Tharun\Projects\backtest_data\Regular_income\output\Equity.json')
+    tradeList = pd.read_json(r'C:\Tharun\Projects\backtest_data\Regular_income\output\TradeList.json')
+    Equity.T.to_csv(r'C:\Tharun\Projects\backtest_data\Regular_income\output\Equity.csv')
+    tradeList.T.to_csv(r'C:\Tharun\Projects\backtest_data\Regular_income\output\TradeList.csv')
 
 
 

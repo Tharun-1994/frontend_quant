@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
+from typing import Dict, Any
 
 from app.models import MarketRegime
 from fastapi.encoders import jsonable_encoder
@@ -14,9 +15,13 @@ class Rule(BaseModel):
     label: Optional[str] = None
     value_type :Optional[str] = None
     value_indicator :Optional[str] = None
-
+    value_lookback :Optional[int] = None
+    params: Optional[Dict[str, Any]] = None
     def to_dict(self):
         return jsonable_encoder(self)
+
+
+RuleTree = Dict[str, Any]
 
 class MarketRegimeBase(BaseModel):
     id: Optional[int] = None
@@ -55,12 +60,28 @@ class MarketRegimeBase(BaseModel):
     slots: Optional[int] = None
 
     created_at: Optional[datetime] = None
+    max_time:Optional[int] = None
+
+    banned_months: Optional[List[int]] = []  # parsed as list in Python
+    market_trend_rules_labels : Optional[str] = None  # JSON string or comma list of labels
+    volatility_rules_labels : Optional[str] = None
+    entry_rules_labels : Optional[str] = None
+    exit_rules_labels : Optional[str] = None
+
+    market_trend_rules_tree: Optional[RuleTree] = None
+    volatility_rules_tree: Optional[RuleTree] = None
+    entry_rules_tree: Optional[RuleTree] = None
+    exit_rules_tree: Optional[RuleTree] = None
+
+
 
     def to_dict(self):
         return jsonable_encoder(self)
 
 
-
+class GlobalFilter:
+    condition: List[Rule]
+    action : str
 
 class StrategyRequest(BaseModel):
     id: int
@@ -77,6 +98,8 @@ class StrategyRequest(BaseModel):
     market_regime_type: Optional[str] = None
 
     regimes: List[MarketRegimeBase] = []
+
+    # global_filter : List[GlobalFilter]= []
 
 
     def to_dict(self):

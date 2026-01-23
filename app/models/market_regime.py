@@ -5,6 +5,7 @@ from sqlalchemy.sql import func
 from app.database import Base
 
 
+
 class MarketRegime(Base):
     __tablename__ = "marketregime"
 
@@ -54,6 +55,14 @@ class MarketRegime(Base):
     slots = Column(Integer)
 
     created_at = Column(DateTime, server_default=func.now())
+    max_time = Column(Integer)
+
+    banned_months = Column(String, default="[]")  # stored as JSON string: "[1,2,6]"
+
+    market_trend_rules_tree_json = Column(Text, nullable=True)
+    volatility_rules_tree_json   = Column(Text, nullable=True)
+    entry_rules_tree_json        = Column(Text, nullable=True)
+    exit_rules_tree_json         = Column(Text, nullable=True)
 
     # # RELATIONSHIP
     strategy = relationship("StrategyBucket", back_populates="regimes")

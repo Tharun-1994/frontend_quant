@@ -38,7 +38,8 @@ FUNCTION_MAPPER = {
     "hv":"HistoricVolatility",
     "atr":"AvgTrueRange",
     "sma":"SMA",
-    "relative_momentum": "ROC"
+    "relative_momentum": "ROC",
+    "n_week_high_recent": "n_week_high_recent"
 }
 
 REBALACE = {

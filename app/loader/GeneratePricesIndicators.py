@@ -3,9 +3,10 @@ from app.constants.static_config import UNIVERSES, FUNCTION_MAPPER
 from app.loader.PriceDataLoader import PriceDataLoader
 from app.loader.TechnicalIndicators import IndicatorCalculator, INDICATOR_REGISTRY
 from app.models.strategy_bucket import StrategyBucket
-
+from typing import Any, Dict, Iterator, Optional
 from app.schemas.strategy import MarketRegimeBase
 import pandas as pd
+from app.schemas.strategy import Rule
 
 class GeneratePricesIndicators:
     @staticmethod
@@ -14,6 +15,32 @@ class GeneratePricesIndicators:
         if not func:
             raise ValueError(f"Function {name} is not a registered indicator.")
         return func(**kwargs)
+
+    @staticmethod
+    def iter_rules_from_tree(node: Optional[Dict[str, Any]]) -> Iterator[Rule]:
+        if not node:
+            return
+
+        if node.get("type") == "rule":
+            r = node.get("rule") or {}
+            if r:
+                # ✅ build Rule safely (handles missing keys)
+                yield Rule(
+                    indicator=r.get("indicator", ""),
+                    lookback=int(r.get("lookback") or 0),
+                    operator=r.get("operator") or "",
+                    value=float(r.get("value") or 0),
+                    connector=r.get("connector") or "",
+                    label=r.get("label"),
+                    value_type=r.get("value_type"),
+                    value_indicator=r.get("value_indicator") or "",
+                    value_lookback=int(r.get("value_lookback") or 0),
+                    params=r.get("params") or None,
+                )
+            return
+
+        for c in node.get("children") or []:
+            yield from GeneratePricesIndicators.iter_rules_from_tree(c)
 
     @staticmethod
     def generate(marketRegime : MarketRegimeBase,strategy: StrategyBucket):
@@ -69,10 +96,11 @@ class GeneratePricesIndicators:
                     price_data[f'{FUNCTION_MAPPER["atr"]}_{marketRegime.atr_lookback_tp}'] = result
 
 
-
-
+                print()
+                entry_rules = list(GeneratePricesIndicators.iter_rules_from_tree(marketRegime.entry_rules_tree))
+                exit_rules = list(GeneratePricesIndicators.iter_rules_from_tree(marketRegime.exit_rules_tree))
                 # Entry Rule  Generation
-                for rule in marketRegime.entry_rules:
+                for rule in entry_rules:
 
                     if rule.indicator == 'rsi':
                         result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[rule.indicator], prices=price_data[f'{strategy.rebalance}_closes'], n=rule.lookback)
@@ -145,9 +173,43 @@ class GeneratePricesIndicators:
                         price_data[f'{rule.indicator}_{rule.lookback}'] = relative_momentum
                         indictor_Set.add(f'{rule.indicator}_{rule.lookback}')
 
+                    elif rule.indicator == 'average_volume':
+                        result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER['sma'],
+                                                prices=price_data[f'{strategy.rebalance}_volumes'],
+                                                lookback=rule.lookback)
+
+                        price_data[f'{rule.indicator}_{rule.lookback}'] = result
+                        indictor_Set.add(f'{rule.indicator}_{rule.lookback}')
+
+                    elif rule.indicator == "n_week_high_recent":
+                        p = rule.params or {}
+                        n_week_days = int(p.get("n_week_days", 252))
+                        within_days = int(p.get("within_days", 20))
+                        result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER['n_week_high_recent'],
+                                                                         closes=price_data[f'{strategy.rebalance}_closes'],
+                                                                         week_high_in_days=n_week_days,high_last_days=within_days)
+
+                        price_data[f'{rule.indicator}_{n_week_days}_{within_days}'] = result
+                        indictor_Set.add(f'{rule.indicator}_{n_week_days}_{within_days}')
+
+
+
+
+                # Entry Value Indicators
+                for rule in entry_rules:
+                    if rule.value_indicator == 'sma':
+                        if f'{rule.value_indicator}_{rule.value_lookback}' not in indictor_Set:
+                            result = GeneratePricesIndicators.call_indicator(
+                                FUNCTION_MAPPER[rule.value_indicator],
+                                prices=price_data[
+                                    f'{strategy.rebalance}_closes'],
+                                lookback=rule.value_lookback)
+
+                            price_data[f'{rule.value_indicator}_{rule.value_lookback}'] = result
+                            indictor_Set.add(f'{rule.value_indicator}_{rule.value_lookback}')
 
                 # Exit Rule  Generation
-                for rule in marketRegime.exit_rules:
+                for rule in exit_rules:
                     if rule.indicator == 'rsi':
                         if f'{rule.indicator}_{rule.lookback}' not in indictor_Set:
                             result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[rule.indicator], prices=price_data[f'{strategy.rebalance}_closes'], n=rule.lookback)
@@ -222,6 +284,30 @@ class GeneratePricesIndicators:
                             relative_momentum = stock_indicator.div(spy_indicator, axis=0)
                             price_data[f'{rule.indicator}_{rule.lookback}'] = relative_momentum
                             indictor_Set.add(f'{rule.indicator}_{rule.lookback}')
+
+                    elif rule.indicator == "n_week_high_recent":
+                        p = rule.params or {}
+                        n_week_days = int(p.get("n_week_days", 252))
+                        within_days = int(p.get("within_days", 20))
+                        result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER['n_week_high_recent'],
+                                                                         closes=price_data[f'{strategy.rebalance}_closes'],
+                                                                         week_high_in_days=n_week_days,high_last_days=within_days)
+
+                        price_data[f'{rule.indicator}_{n_week_days}_{within_days}'] = result
+                        indictor_Set.add(f'{rule.indicator}_{n_week_days}_{within_days}')
+
+
+                # Exit Value Indicators
+                for rule in exit_rules:
+                    if rule.value_indicator == 'sma':
+                        if f'{rule.value_indicator}_{rule.value_lookback}' not in indictor_Set:
+                            result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[rule.value_indicator],
+                                                                             prices=price_data[
+                                                                                 f'{strategy.rebalance}_closes'],
+                                                                             lookback=rule.value_lookback)
+
+                            price_data[f'{rule.value_indicator}_{rule.value_lookback}'] = result
+                            indictor_Set.add(f'{rule.value_indicator}_{rule.value_lookback}')
 
 
                 # Ranking Indicator Generation
@@ -337,6 +423,6 @@ class GeneratePricesIndicators:
                 price_data[f'trading_dates'] = trading_days_df
 
 
-                loader.uploadCommonPath(price_data=price_data,universe=univ)
+                loader.uploadCommonPath(price_data=price_data,universe=univ,strategy_name = strategy.name)
 
 

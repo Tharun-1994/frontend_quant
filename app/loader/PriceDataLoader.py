@@ -1,3 +1,6 @@
+from pathlib import Path
+from typing import Tuple
+
 from app.constants.PricePath import PricePath
 import pandas as pd
 import pandas_market_calendars as mcal
@@ -17,6 +20,8 @@ class PriceDataLoader:
             f'{rebalance}_lows': pd.read_csv(PricePath.lows(self.base_path),index_col=['Date'],parse_dates=True),
             f'{universe}_universe': pd.read_csv(PricePath.universe(f'{self.base_path}/{universe}'),index_col=['Date'],parse_dates=True),
             f'{rebalance}_unadjusted_closes': pd.read_csv(PricePath.unadjustedCloses(self.base_path),index_col=['Date'],parse_dates=True),
+            f'{rebalance}_volumes': pd.read_csv(PricePath.volumes(self.base_path),index_col=['Date'],parse_dates=True),
+            f'{rebalance}_turnovers': pd.read_csv(PricePath.turnovers(self.base_path),index_col=['Date'],parse_dates=True),
         }
 
     def load_spy_close(self,rebalance=''):
@@ -25,14 +30,16 @@ class PriceDataLoader:
                                                           index_col=['Date'], parse_dates=True)
         }
 
-    def uploadCommonPath(self,price_data={}, universe=""):
+    def uploadCommonPath(self,price_data={}, universe="",strategy_name = ""):
+
+
 
         for k in price_data.keys():
 
             if 'universe' not in k and 'trading_dates' not in k and 'all_dates' not in k :
                 # print(k)
                 price_data[k] = price_data[k].astype("float32")
-            price_data[k].to_parquet(f'{PricePath.getBacktestInputPath(universe=universe)}/{k}.parquet')
+            price_data[k].to_parquet(f'{PricePath.getBacktestInputPath(universe=universe,strategy_name=strategy_name)}/{k}.parquet')
             # price_data[k].to_csv(f'{PricePath.getBacktestInputPath(universe=universe)}/{k}.csv')
 
 
@@ -141,3 +148,16 @@ class PriceDataLoader:
     #     print("CRSI")
         # CRSI = CRSI(prices=pricedata.daily_closes, RSI_length=strategy_params["crsi_length"], UpDown_length=2,
         #             ROC_length=100)
+    @classmethod
+    def create_strategy_Folder(cls, name):
+
+        base = Path(PricePath.backtestPath)
+        safe = name.strip()
+        safe = safe.replace(" ", "_")
+
+        strategy_dir = base / safe
+
+        strategy_dir.mkdir(parents=True, exist_ok=True)
+        (strategy_dir / "input").mkdir(exist_ok=True)
+        (strategy_dir / "output").mkdir(exist_ok=True)
+

@@ -2,6 +2,7 @@ from http.client import HTTPException
 
 from fastapi import APIRouter, Depends
 from numpy.testing.print_coercion_tables import print_new_cast_table
+from sqlalchemy import exists, func
 
 from sqlalchemy.orm import Session
 import json
@@ -11,6 +12,7 @@ from app.constants.static_config import UNIVERSES, FUNCTION_MAPPER, UNIVERSES_Co
 from app.database import get_db
 from app.loader.GeneratePricesIndicators import GeneratePricesIndicators
 from app.loader.PriceDataLoader import PriceDataLoader
+from app.loader.Rule_Tree_JSON import dumps_tree, loads_tree, normalize_rules_tree, normalize_rule
 from app.loader.TechnicalIndicators import INDICATOR_REGISTRY, IndicatorCalculator
 from app.models import MarketRegime
 from app.models.strategy_bucket import StrategyBucket
@@ -20,8 +22,8 @@ from typing import List, Dict, Any, Optional
 import pandas as pd
 import httpx
 
-from app.schemas.PerformanceMetrics import PerformanceMetrics
 from app.schemas.strategy import MarketRegimeBase
+from app.schemas.PerformanceMetrics import PerformanceMetrics
 
 router = APIRouter()
 
@@ -35,7 +37,7 @@ def build_expression(rules: List[Dict[str, Any]]) -> str:
 
         # Decide right-hand side
         if rule.get("value_type") == "indicator_price":
-            right = rule.get("value_indicator", "")
+            right = f'{rule.get("value_indicator", "").lower()}_{rule.get("value_lookback", "")}'
         else:  # default numeric
             right = str(rule.get("value", 0.0))
 
@@ -50,9 +52,6 @@ def build_expression(rules: List[Dict[str, Any]]) -> str:
     return " ".join(parts)
 
 
-
-
-
 def extract_labels(rules: List[Dict[str, Any]]) -> str:
     """
     Extract labels from rules. If rule has no label, use indicator as fallback.
@@ -63,7 +62,6 @@ def extract_labels(rules: List[Dict[str, Any]]) -> str:
         label = f"{r.get('indicator')}_{r.get('lookback')}_{r.get('label')}"
         labels.append(label)
     return json.dumps(labels)
-
 
 def parse_expression(expr: str) -> List[Dict[str, Any]]:
     """
@@ -96,11 +94,18 @@ def parse_expression(expr: str) -> List[Dict[str, Any]]:
             value = float(rhs)
             value_type = "value"
             value_indicator = ""
+            value_lookback = 0
         except ValueError:
             value = 0
             value_type = "indicator_price"
-            value_indicator = rhs
+            if '_' in rhs:
 
+                value_side = rhs.split('_')
+                value_indicator = value_side[0]
+                value_lookback = value_side[1]
+            else:
+                value_indicator = rhs
+                value_lookback = 0
         rules.append({
             "indicator": indicator,
             "lookback": int(lookback),
@@ -109,6 +114,7 @@ def parse_expression(expr: str) -> List[Dict[str, Any]]:
             "connector": connector,
             "value_type": value_type,
             "value_indicator": value_indicator,
+            "value_lookback": value_lookback,
         })
 
         connector = ""  # reset
@@ -124,7 +130,6 @@ def sort_rules_by_connector(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         rules,
         key=lambda r: 0 if r.get("connector") in ("AND", "OR", "&&", "||") else 1
     )
-
 
 def parse_labels(labels_str: Optional[str], rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
@@ -153,6 +158,11 @@ def parse_labels(labels_str: Optional[str], rules: List[Dict[str, Any]]) -> List
     for r in rules:
         key = f"{r['indicator']}_{r['lookback']}"
         r["label"] = label_map.get(key, r["indicator"])
+
+        if r['value_type'] == 'indicator_price':
+            v_key = f"{r['value_indicator']}_{r['value_lookback']}"
+            r["label"] = label_map.get(key, r["value_indicator"])
+
     return rules
 
 def db_to_pydantic(db_obj: MarketRegime) -> MarketRegimeBase:
@@ -189,6 +199,16 @@ def db_to_pydantic(db_obj: MarketRegime) -> MarketRegimeBase:
         slots=db_obj.slots,
         rebalance=db_obj.rebalance,
         created_at=db_obj.created_at,
+        max_time=db_obj.max_time,
+        banned_months=json.loads(db_obj.banned_months or "[]"),
+        market_trend_rules_labels=db_obj.market_trend_rules_labels,
+        volatility_rules_labels=db_obj.volatility_rules_labels,
+        entry_rules_labels=db_obj.entry_rules_labels,
+        exit_rules_labels=db_obj.exit_rules_labels,
+        entry_rules_tree=loads_tree(db_obj.entry_rules_tree_json),
+        exit_rules_tree=loads_tree(db_obj.exit_rules_tree_json),
+        market_trend_rules_tree=loads_tree(db_obj.market_trend_rules_tree_json),
+        volatility_rules_tree=loads_tree(db_obj.volatility_rules_tree_json),
     )
     return m
 
@@ -232,10 +252,25 @@ def save_strategy(strategy_data: StrategyRequest, db: Session = Depends(get_db))
     db.commit()
     db.refresh(strategy)
 
+    PriceDataLoader.create_strategy_Folder(name = strategy_data.name)
     return {
         "strategy_id": strategy.id,
         "status": f"successfully {action}"
     }
+
+
+
+@router.get("/api/check-username")
+def check_username_taken(name: str, db: Session = Depends(get_db)):
+    # This generates: SELECT count(*) FROM strategies_bucket WHERE name = '...'
+    count = db.query(func.count(StrategyBucket.name)).filter(
+        StrategyBucket.name == name
+    ).scalar()
+
+    return {"name": name, "taken": count > 0}
+
+
+
 
 
 @router.get("/api/marketregime/{strategy_id}", response_model=List[MarketRegimeBase])
@@ -260,16 +295,16 @@ def save_marketRegime(marketregime: MarketRegimeBase, db: Session = Depends(get_
         db_obj.market_trend_type = marketregime.market_trend_type
 
         db_obj.market_trend_rules = build_expression([r.dict() for r in (marketregime.market_trend_rules or [])])
-        db_obj.market_trend_rules_labels = extract_labels([r.dict() for r in (marketregime.market_trend_rules or [])])
+        db_obj.market_trend_rules_labels = db_obj.market_trend_rules
 
         db_obj.volatility_rules = build_expression([r.dict() for r in (marketregime.volatility_rules or [])])
-        db_obj.volatility_rules_labels = extract_labels([r.dict() for r in (marketregime.volatility_rules or [])])
+        db_obj.volatility_rules_labels = db_obj.volatility_rules
 
         db_obj.entry_rules = build_expression([r.dict() for r in (marketregime.entry_rules or [])])
-        db_obj.entry_rules_labels = extract_labels([r.dict() for r in (marketregime.entry_rules or [])])
+        db_obj.entry_rules_labels = db_obj.entry_rules
 
         db_obj.exit_rules = build_expression([r.dict() for r in (marketregime.exit_rules or [])])
-        db_obj.exit_rules_labels = extract_labels([r.dict() for r in (marketregime.exit_rules or [])])
+        db_obj.exit_rules_labels = db_obj.exit_rules
 
         db_obj.entry_timing = marketregime.entry_timing
         db_obj.exit_timing = marketregime.exit_timing
@@ -294,6 +329,9 @@ def save_marketRegime(marketregime: MarketRegimeBase, db: Session = Depends(get_
         db_obj.universe = marketregime.universe
         db_obj.capital = marketregime.capital
         db_obj.slots = marketregime.slots
+        db_obj.max_time = marketregime.max_time
+
+        db_obj.banned_months = json.dumps(marketregime.banned_months or [])
 
         db.commit()
         db.refresh(db_obj)
@@ -346,6 +384,8 @@ def save_marketRegime(marketregime: MarketRegimeBase, db: Session = Depends(get_
             universe=marketregime.universe,
             capital=marketregime.capital,
             slots=marketregime.slots,
+            max_time = marketregime.max_time,
+            banned_months=json.dumps(marketregime.banned_months or [])
         )
         db.add(db_obj)
         db.commit()
@@ -358,6 +398,94 @@ def save_marketRegime(marketregime: MarketRegimeBase, db: Session = Depends(get_
 
 
 
+
+@router.post("/api/save-marketregime-v2")
+def save_marketRegime_v2(marketregime: MarketRegimeBase, db: Session = Depends(get_db)):
+    # --- helper to compute legacy expression strings ---
+    def expr_and_labels(rules):
+        rules_dicts = [normalize_rule(r.dict()) for r in (rules or [])]  # ✅ changed
+        expr = build_expression(rules_dicts)
+        labels = extract_labels(rules_dicts)
+        return expr, labels
+
+    mt_expr, mt_labels = expr_and_labels(marketregime.market_trend_rules)
+    vol_expr, vol_labels = expr_and_labels(marketregime.volatility_rules)
+    en_expr, en_labels = expr_and_labels(marketregime.entry_rules)
+    ex_expr, ex_labels = expr_and_labels(marketregime.exit_rules)
+
+    if marketregime.id:
+        db_obj = db.query(MarketRegime).filter(MarketRegime.id == marketregime.id).first()
+        if not db_obj:
+            raise HTTPException(status_code=404, detail="MarketRegime not found")
+    else:
+        db_obj = MarketRegime(strategy_id=marketregime.strategy_id)
+        db.add(db_obj)
+
+    # --- normal fields (same as before) ---
+    db_obj.regime_type = marketregime.regime_type
+    db_obj.regime_ticker = marketregime.regime_ticker
+    db_obj.market_trend_type = marketregime.market_trend_type
+
+    db_obj.market_trend_rules = mt_expr
+    db_obj.market_trend_rules_labels = mt_labels
+
+    db_obj.volatility_rules = vol_expr
+    db_obj.volatility_rules_labels = vol_labels
+
+    db_obj.entry_rules = en_expr
+    db_obj.entry_rules_labels = en_labels
+
+    db_obj.exit_rules = ex_expr
+    db_obj.exit_rules_labels = ex_labels
+
+    db_obj.entry_timing = marketregime.entry_timing
+    db_obj.exit_timing = marketregime.exit_timing
+
+    db_obj.stoploss_type = marketregime.stoploss_type
+    db_obj.takeprofit_type = marketregime.takeprofit_type
+    db_obj.stoploss_pct = marketregime.stoploss_pct
+    db_obj.takeprofit_pct = marketregime.takeprofit_pct
+    db_obj.stoploss_timing = marketregime.stoploss_timing
+    db_obj.takeprofit_timing = marketregime.takeprofit_timing
+    db_obj.atr_lookback_stp = marketregime.atr_lookback_stp
+    db_obj.atr_lookback_tp = marketregime.atr_lookback_tp
+
+    db_obj.ranking = marketregime.ranking
+    db_obj.ranking_lookback = marketregime.ranking_lookback
+    db_obj.ranking_order = marketregime.ranking_order
+
+    db_obj.order_type = marketregime.order_type
+    db_obj.limit_pct = marketregime.limit_pct
+    db_obj.atr_limit_lookback = marketregime.atr_limit_lookback
+
+    db_obj.universe = marketregime.universe
+    db_obj.capital = marketregime.capital
+    db_obj.slots = marketregime.slots
+    db_obj.max_time = marketregime.max_time
+
+    db_obj.banned_months = json.dumps(marketregime.banned_months or [])
+
+    marketregime.market_trend_rules_tree = normalize_rules_tree(marketregime.market_trend_rules_tree)
+    marketregime.volatility_rules_tree = normalize_rules_tree(marketregime.volatility_rules_tree)
+    marketregime.entry_rules_tree = normalize_rules_tree(marketregime.entry_rules_tree)
+    marketregime.exit_rules_tree = normalize_rules_tree(marketregime.exit_rules_tree)
+
+    # ✅ NEW: save tree JSON into new columns
+    db_obj.market_trend_rules_tree_json = dumps_tree(marketregime.market_trend_rules_tree)
+    db_obj.volatility_rules_tree_json   = dumps_tree(marketregime.volatility_rules_tree)
+    db_obj.entry_rules_tree_json        = dumps_tree(marketregime.entry_rules_tree)
+    db_obj.exit_rules_tree_json         = dumps_tree(marketregime.exit_rules_tree)
+
+    db.commit()
+    db.refresh(db_obj)
+
+    # keep your side-effect
+    strategy = db.query(StrategyBucket).filter(StrategyBucket.id == marketregime.strategy_id).first()
+
+
+    GeneratePricesIndicators.generate(marketRegime=marketregime, strategy=strategy)
+
+    return db_obj
 
 
 # @router.post("/api/save-strategys")
@@ -789,94 +917,104 @@ def save_marketRegime(marketregime: MarketRegimeBase, db: Session = Depends(get_
 #
 
 @router.get("/api/{strategy_id}/equity")
-def get_equity(strategy_id: str):
-    file_path = r"C:\Tharun\Projects\backtest_data\outputs\Equity.json"
+def get_equity(strategy_id: str, db: Session = Depends(get_db)):
+    data =[]
+    layout = {}
+    strategy = None
+    if strategy_id:
+        strategy = db.query(StrategyBucket).filter(StrategyBucket.id == strategy_id).first()
 
-    try:
-        df = pd.read_json(file_path).T
-    except Exception:
-        raise HTTPException(status_code=404, detail="Equity file not found")
+        # file_path = r"C:\Tharun\Projects\backtest_data\outputs\Equity.json"
+        commonPath = r'C:\Tharun\Projects\backtest_data'
 
-    df["equityValue"] = df["equityValue"] - 100000
-    df["dailyDrawdown"] = -1 * df["dailyDrawdown"]
-    df.index.name = "date"
+        file_path = f'{commonPath}/{strategy.name}/output/Equity.json'
 
-    # ✅ Extract values
-    x_dates = df.index.strftime("%Y-%m-%d").tolist()
 
-    data = [
-        # (1) Equity
-        {
-            "x": x_dates,
-            "y": df["equityValue"].tolist(),
-            "type": "scatter",
-            "mode": "lines",
-            "name": "Equity",
-            "line": {"color": "green", "width": 2},
-            "hovertemplate": "Equity: %{y:,.0f}<br>Date: %{x|%Y-%m-%d}<extra></extra>",
-            "xaxis": "x",
-            "yaxis": "y",
-        },
-        # (2) Drawdown
-        {
-            "x": x_dates,
-            "y": df["dailyDrawdown"].tolist(),
-            "type": "scatter",
-            "mode": "lines",
-            "fill": "tozeroy",
-            "fillcolor": "rgba(220,38,38,0.6)",
-            "name": "Drawdown",
-            "line": {"color": "rgba(220,38,38,1)", "width": 1},
-            "hovertemplate": "Drawdown: %{y:,.0f}<br>Date: %{x|%Y-%m-%d}<extra></extra>",
-            "xaxis": "x2",
-            "yaxis": "y2",
-        },
-        # (3a) Utility Value — area chart
-        {
-            "x": x_dates,
-            "y": df["dayEndUtilityValue"].tolist(),
-            "type": "scatter",
-            "mode": "lines",
-            "fill": "tozeroy",
-            "fillcolor": "rgba(16,185,129,0.5)",
-            "name": "Utility Value",
-            "line": {"color": "rgba(16,185,129,1)", "width": 2},
-            "hovertemplate": "Utility Value: %{y:,.0f}<br>Date: %{x|%Y-%m-%d}<extra></extra>",
-            "xaxis": "x3",
-            "yaxis": "y3",
-        },
-        # (3b) Utility Slots — scatter dots
-        {
-            "x": x_dates,
-            "y": df["dayEndUtility"].tolist(),
-            "type": "scatter",
-            "mode": "lines",
-            "fill": "tozeroy",
-            "fillcolor": "rgba(16,185,129,0.5)",
-            "name": "Utility Slots",
-            "hovertemplate": "Utility Slots: %{y}<br>Date: %{x|%Y-%m-%d}<extra></extra>",
-            "xaxis": "x3",
-            "yaxis": "y3",
-        },
-    ]
+        try:
+            df = pd.read_json(file_path).T
+        except Exception:
+            raise HTTPException(status_code=404, detail="Equity file not found")
 
-    layout = {
-        "title": f"Equity Curve - {strategy_id}",
-        "height": 800,
-        "plot_bgcolor": "white",
-        "paper_bgcolor": "white",
-        "font": {"family": "Inter, sans-serif", "size": 12, "color": "#333"},
-        "hovermode": "x unified",
-        "legend": {"orientation": "h", "y": -0.25},
+        df["equityValue"] = df["equityValue"] - 100000
+        df["dailyDrawdown"] = -1 * df["dailyDrawdown"]
+        df.index.name = "date"
 
-        # Subplot configs
-        "xaxis": {"domain": [0, 1], "anchor": "y", "showticklabels": False},
-        "yaxis": {"domain": [0.40, 1], "title": "Equity"},
-        "xaxis2": {"domain": [0, 1], "anchor": "y2", "matches": "x", "showticklabels": False},
-        "yaxis2": {"domain": [0.20, 0.39], "title": "Drawdown"},
-        "xaxis3": {"domain": [0, 1], "anchor": "y3", "matches": "x", "title": "Date"},
-        "yaxis3": {"domain": [0, 0.19], "title": "Utility"},
-    }
+        # ✅ Extract values
+        x_dates = df.index.strftime("%Y-%m-%d").tolist()
+
+        data = [
+            # (1) Equity
+            {
+                "x": x_dates,
+                "y": df["equityValue"].tolist(),
+                "type": "scatter",
+                "mode": "lines",
+                "name": "Equity",
+                "line": {"color": "green", "width": 2},
+                "hovertemplate": "Equity: %{y:,.0f}<br>Date: %{x|%Y-%m-%d}<extra></extra>",
+                "xaxis": "x",
+                "yaxis": "y",
+            },
+            # (2) Drawdown
+            {
+                "x": x_dates,
+                "y": df["dailyDrawdown"].tolist(),
+                "type": "scatter",
+                "mode": "lines",
+                "fill": "tozeroy",
+                "fillcolor": "rgba(220,38,38,0.6)",
+                "name": "Drawdown",
+                "line": {"color": "rgba(220,38,38,1)", "width": 1},
+                "hovertemplate": "Drawdown: %{y:,.0f}<br>Date: %{x|%Y-%m-%d}<extra></extra>",
+                "xaxis": "x2",
+                "yaxis": "y2",
+            },
+            # (3a) Utility Value — area chart
+            {
+                "x": x_dates,
+                "y": df["dayEndUtilityValue"].tolist(),
+                "type": "scatter",
+                "mode": "lines",
+                "fill": "tozeroy",
+                "fillcolor": "rgba(16,185,129,0.5)",
+                "name": "Utility Value",
+                "line": {"color": "rgba(16,185,129,1)", "width": 2},
+                "hovertemplate": "Utility Value: %{y:,.0f}<br>Date: %{x|%Y-%m-%d}<extra></extra>",
+                "xaxis": "x3",
+                "yaxis": "y3",
+            },
+            # (3b) Utility Slots — scatter dots
+            {
+                "x": x_dates,
+                "y": df["dayEndUtility"].tolist(),
+                "type": "scatter",
+                "mode": "lines",
+                "fill": "tozeroy",
+                "fillcolor": "rgba(16,185,129,0.5)",
+                "name": "Utility Slots",
+                "hovertemplate": "Utility Slots: %{y}<br>Date: %{x|%Y-%m-%d}<extra></extra>",
+                "xaxis": "x3",
+                "yaxis": "y3",
+            },
+        ]
+
+        layout = {
+            "title": f"Equity Curve - {strategy_id}",
+            "height": 800,
+            "plot_bgcolor": "white",
+            "paper_bgcolor": "white",
+            "font": {"family": "Inter, sans-serif", "size": 12, "color": "#333"},
+            "hovermode": "x unified",
+            "legend": {"orientation": "h", "y": -0.25},
+
+            # Subplot configs
+            "xaxis": {"domain": [0, 1], "anchor": "y", "showticklabels": False},
+            "yaxis": {"domain": [0.40, 1], "title": "Equity"},
+            "xaxis2": {"domain": [0, 1], "anchor": "y2", "matches": "x", "showticklabels": False},
+            "yaxis2": {"domain": [0.20, 0.39], "title": "Drawdown"},
+            "xaxis3": {"domain": [0, 1], "anchor": "y3", "matches": "x", "title": "Date"},
+            "yaxis3": {"domain": [0, 0.19], "title": "Utility"},
+        }
 
     return json.loads(json.dumps({"data": data, "layout": layout}, cls=PlotlyJSONEncoder))
 
@@ -992,12 +1130,15 @@ def get_performence(strategy_id: str, db: Session = Depends(get_db)):
 
     strategy = db.query(StrategyBucket).filter(StrategyBucket.id == strategy_id).first()
 
+    commonPath = r'C:\Tharun\Projects\backtest_data'
 
-    equity_df = pd.read_json(r'C:\Tharun\Projects\backtest_data\outputs\Equity.json').T
+    equity_path = f'{commonPath}/{strategy.name}/output/Equity.json'
+    equity_df = pd.read_json(equity_path).T
     equity_df.index.name = 'date'
     equity_df['dailyDrawdown'] = -1 * equity_df['dailyDrawdown']
 
-    trade_df = pd.read_json(r'C:\Tharun\Projects\backtest_data\outputs\TradeList.json').T
+    tradelist_path = f'{commonPath}/{strategy.name}/output/TradeList.json'
+    trade_df = pd.read_json(tradelist_path).T
     trade_df.index.name = 'id'
 
 
@@ -1012,7 +1153,7 @@ async def run_backtest(strategy_data: StrategyRequest):
         strategy_dict = strategy_data.to_dict()
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                "http://localhost:8080/api/runbacktestv2",
+                "http://localhost:8080/api/runbacktestv3",
                 json=strategy_dict,
                 timeout=60.0  # optional: increase if backtest takes time
             )
@@ -1032,9 +1173,6 @@ async def run_backtest(strategy_data: StrategyRequest):
     except Exception as e:
         print("Error in run_backtest:", e)
         raise HTTPException(status_code=500, detail=str(e))
-
-
-
 
 # def parse_expression(expr: str) -> List[Dict[str, Any]]:
 #     """
@@ -1066,8 +1204,6 @@ async def run_backtest(strategy_data: StrategyRequest):
 #         })
 #
 #     return rules
-
-
 
 @router.get("/api/get-strategy/{id}", response_model=StrategyRequest)
 def get_strategy(id: int, db: Session = Depends(get_db)):

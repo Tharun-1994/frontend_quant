@@ -1187,8 +1187,25 @@ class IndicatorCalculator:
 
         return trix_df,trix_signal_df
 
+    @staticmethod
+    @register
+    def n_week_high_recent(closes, week_high_in_days: int, high_last_days: int) -> pd.DataFrame:
 
+        roll_n = (
+            closes
+            .rolling(window=week_high_in_days, min_periods=week_high_in_days)
+            .max()
+            .shift(1)
+        )
 
+        roll_x = (
+            closes
+            .rolling(window=high_last_days, min_periods=high_last_days)
+            .max()
+            .shift(1)
+        )
+
+        return (roll_n == roll_x)
 
 '''
 
