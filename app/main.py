@@ -137,7 +137,7 @@ async def convertion():
 
 # Main entry point
 def main():
-    uvicorn.run("app.main:app", host="192.168.1.65", port=8001, reload=True)
+    uvicorn.run("app.main:app", host="192.168.1.66", port=8001, reload=True)
 
 # Only run if this file is executed directly
 if __name__ == "__main__":

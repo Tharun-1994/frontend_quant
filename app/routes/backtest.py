@@ -175,8 +175,8 @@ def db_to_pydantic(db_obj: MarketRegime) -> MarketRegimeBase:
 
         market_trend_rules=sort_rules_by_connector(parse_labels(db_obj.market_trend_rules_labels, parse_expression(db_obj.market_trend_rules))),
         volatility_rules=sort_rules_by_connector(parse_labels(db_obj.volatility_rules_labels, parse_expression(db_obj.volatility_rules))),
-        entry_rules=sort_rules_by_connector(parse_labels(db_obj.entry_rules_labels, parse_expression(db_obj.entry_rules))),
-        exit_rules=sort_rules_by_connector(parse_labels(db_obj.exit_rules_labels, parse_expression(db_obj.exit_rules))),
+        # entry_rules=sort_rules_by_connector(parse_labels(db_obj.entry_rules_labels, parse_expression(db_obj.entry_rules))),
+        # exit_rules=sort_rules_by_connector(parse_labels(db_obj.exit_rules_labels, parse_expression(db_obj.exit_rules))),
 
         entry_timing=db_obj.entry_timing,
         exit_timing=db_obj.exit_timing,
@@ -209,6 +209,8 @@ def db_to_pydantic(db_obj: MarketRegime) -> MarketRegimeBase:
         exit_rules_tree=loads_tree(db_obj.exit_rules_tree_json),
         market_trend_rules_tree=loads_tree(db_obj.market_trend_rules_tree_json),
         volatility_rules_tree=loads_tree(db_obj.volatility_rules_tree_json),
+        freeze_rules_tree=loads_tree(db_obj.freeze_rules_tree_json),
+        resume_rules_tree=loads_tree(db_obj.resume_rules_tree_json),
     )
     return m
 
@@ -409,9 +411,12 @@ def save_marketRegime_v2(marketregime: MarketRegimeBase, db: Session = Depends(g
         return expr, labels
 
     mt_expr, mt_labels = expr_and_labels(marketregime.market_trend_rules)
-    vol_expr, vol_labels = expr_and_labels(marketregime.volatility_rules)
-    en_expr, en_labels = expr_and_labels(marketregime.entry_rules)
-    ex_expr, ex_labels = expr_and_labels(marketregime.exit_rules)
+    # vol_expr, vol_labels = expr_and_labels(marketregime.volatility_rules)
+    # freeze_expr, freeze_labels = expr_and_labels(marketregime.freeze_rules_tree)
+    # resume_expr, resume_labels = expr_and_labels(marketregime.resume_rules_tree)
+
+    # en_expr, en_labels = expr_and_labels(marketregime.entry_rules)
+    # ex_expr, ex_labels = expr_and_labels(marketregime.exit_rules)
 
     if marketregime.id:
         db_obj = db.query(MarketRegime).filter(MarketRegime.id == marketregime.id).first()
@@ -429,14 +434,14 @@ def save_marketRegime_v2(marketregime: MarketRegimeBase, db: Session = Depends(g
     db_obj.market_trend_rules = mt_expr
     db_obj.market_trend_rules_labels = mt_labels
 
-    db_obj.volatility_rules = vol_expr
-    db_obj.volatility_rules_labels = vol_labels
-
-    db_obj.entry_rules = en_expr
-    db_obj.entry_rules_labels = en_labels
-
-    db_obj.exit_rules = ex_expr
-    db_obj.exit_rules_labels = ex_labels
+    # db_obj.resume_rules_tree_json = vol_expr
+    # db_obj.volatility_rules_labels = vol_labels
+    #
+    # db_obj.entry_rules = en_expr
+    # db_obj.entry_rules_labels = en_labels
+    #
+    # db_obj.exit_rules = ex_expr
+    # db_obj.exit_rules_labels = ex_labels
 
     db_obj.entry_timing = marketregime.entry_timing
     db_obj.exit_timing = marketregime.exit_timing
@@ -466,15 +471,20 @@ def save_marketRegime_v2(marketregime: MarketRegimeBase, db: Session = Depends(g
     db_obj.banned_months = json.dumps(marketregime.banned_months or [])
 
     marketregime.market_trend_rules_tree = normalize_rules_tree(marketregime.market_trend_rules_tree)
-    marketregime.volatility_rules_tree = normalize_rules_tree(marketregime.volatility_rules_tree)
+
     marketregime.entry_rules_tree = normalize_rules_tree(marketregime.entry_rules_tree)
     marketregime.exit_rules_tree = normalize_rules_tree(marketregime.exit_rules_tree)
 
+    marketregime.freeze_rules_tree = normalize_rules_tree(marketregime.freeze_rules_tree)
+    marketregime.resume_rules_tree = normalize_rules_tree(marketregime.resume_rules_tree)
+
     # ✅ NEW: save tree JSON into new columns
     db_obj.market_trend_rules_tree_json = dumps_tree(marketregime.market_trend_rules_tree)
-    db_obj.volatility_rules_tree_json   = dumps_tree(marketregime.volatility_rules_tree)
     db_obj.entry_rules_tree_json        = dumps_tree(marketregime.entry_rules_tree)
     db_obj.exit_rules_tree_json         = dumps_tree(marketregime.exit_rules_tree)
+
+    db_obj.freeze_rules_tree_json = dumps_tree(marketregime.freeze_rules_tree)
+    db_obj.resume_rules_tree_json = dumps_tree(marketregime.resume_rules_tree)
 
     db.commit()
     db.refresh(db_obj)

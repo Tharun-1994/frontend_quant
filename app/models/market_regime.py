@@ -22,10 +22,10 @@ class MarketRegime(Base):
     volatility_rules = Column(String)  # JSON string
     volatility_rules_labels = Column(String)
 
-    entry_rules = Column(String, nullable=False)
+    # entry_rules = Column(String, nullable=False)
     entry_rules_labels = Column(String)
 
-    exit_rules = Column(String, nullable=False)
+    # exit_rules = Column(String, nullable=False)
     exit_rules_labels = Column(String)
 
     entry_timing = Column(String)
@@ -63,6 +63,9 @@ class MarketRegime(Base):
     volatility_rules_tree_json   = Column(Text, nullable=True)
     entry_rules_tree_json        = Column(Text, nullable=True)
     exit_rules_tree_json         = Column(Text, nullable=True)
+
+    freeze_rules_tree_json = Column(Text, nullable=True)
+    resume_rules_tree_json = Column(Text, nullable=True)
 
     # # RELATIONSHIP
     strategy = relationship("StrategyBucket", back_populates="regimes")

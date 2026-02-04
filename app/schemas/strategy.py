@@ -32,8 +32,8 @@ class MarketRegimeBase(BaseModel):
     market_trend_rules: Optional[List[Rule]] = None
     volatility_rules: Optional[List[Rule]] = None
 
-    entry_rules: List[Rule]
-    exit_rules: List[Rule]
+    # entry_rules: List[Rule]
+    # exit_rules: List[Rule]
 
     entry_timing: Optional[str] = None
     exit_timing: Optional[str] = None
@@ -72,6 +72,8 @@ class MarketRegimeBase(BaseModel):
     volatility_rules_tree: Optional[RuleTree] = None
     entry_rules_tree: Optional[RuleTree] = None
     exit_rules_tree: Optional[RuleTree] = None
+    freeze_rules_tree: Optional[RuleTree] = None
+    resume_rules_tree: Optional[RuleTree] = None
 
 
 
