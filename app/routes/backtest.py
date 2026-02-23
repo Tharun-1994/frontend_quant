@@ -24,6 +24,7 @@ import httpx
 
 from app.schemas.strategy import MarketRegimeBase
 from app.schemas.PerformanceMetrics import PerformanceMetrics
+from app.services.BacktestService import backtest_service
 
 router = APIRouter()
 
@@ -182,7 +183,10 @@ def db_to_pydantic(db_obj: MarketRegime) -> MarketRegimeBase:
         exit_timing=db_obj.exit_timing,
         stoploss_type=db_obj.stoploss_type,
         takeprofit_type=db_obj.takeprofit_type,
+        takeprofit_dollar=db_obj.takeprofit_dollar,
+        stoploss_dollar=db_obj.stoploss_dollar,
         stoploss_pct=db_obj.stoploss_pct,
+
         takeprofit_pct=db_obj.takeprofit_pct,
         stoploss_timing=db_obj.stoploss_timing,
         takeprofit_timing=db_obj.takeprofit_timing,
@@ -410,7 +414,7 @@ def save_marketRegime_v2(marketregime: MarketRegimeBase, db: Session = Depends(g
         labels = extract_labels(rules_dicts)
         return expr, labels
 
-    mt_expr, mt_labels = expr_and_labels(marketregime.market_trend_rules)
+    # mt_expr, mt_labels = expr_and_labels(marketregime.market_trend_rules)
     # vol_expr, vol_labels = expr_and_labels(marketregime.volatility_rules)
     # freeze_expr, freeze_labels = expr_and_labels(marketregime.freeze_rules_tree)
     # resume_expr, resume_labels = expr_and_labels(marketregime.resume_rules_tree)
@@ -431,8 +435,8 @@ def save_marketRegime_v2(marketregime: MarketRegimeBase, db: Session = Depends(g
     db_obj.regime_ticker = marketregime.regime_ticker
     db_obj.market_trend_type = marketregime.market_trend_type
 
-    db_obj.market_trend_rules = mt_expr
-    db_obj.market_trend_rules_labels = mt_labels
+    db_obj.market_trend_rules = None
+    db_obj.market_trend_rules_labels = None
 
     # db_obj.resume_rules_tree_json = vol_expr
     # db_obj.volatility_rules_labels = vol_labels
@@ -448,6 +452,10 @@ def save_marketRegime_v2(marketregime: MarketRegimeBase, db: Session = Depends(g
 
     db_obj.stoploss_type = marketregime.stoploss_type
     db_obj.takeprofit_type = marketregime.takeprofit_type
+
+    db_obj.takeprofit_dollar = marketregime.takeprofit_dollar
+    db_obj.stoploss_dollar = marketregime.stoploss_dollar
+
     db_obj.stoploss_pct = marketregime.stoploss_pct
     db_obj.takeprofit_pct = marketregime.takeprofit_pct
     db_obj.stoploss_timing = marketregime.stoploss_timing
@@ -1158,28 +1166,18 @@ def get_performence(strategy_id: str, db: Session = Depends(get_db)):
 @router.post("/api/runbacktestv2")
 async def run_backtest(strategy_data: StrategyRequest):
     try:
-        # strategy_dict = strategy_data.to_dict()
-        print("Strategy object as dictionary:", strategy_data)
         strategy_dict = strategy_data.to_dict()
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                "http://localhost:8080/api/runbacktestv3",
-                json=strategy_dict,
-                timeout=60.0  # optional: increase if backtest takes time
-            )
+        print("Strategy object as dictionary:", strategy_dict)
 
-        if response.status_code == 200:
-            java_result = response.json()
-            print("Java backtest response:", java_result)
+        # Determine which endpoint to use
+        if strategy_data.market_regime_type == 'Individual ETFs - Simple':
+            await backtest_service.run_tradestation_backtest(strategy_data=strategy_data)
+        else:
+            await backtest_service.run_java_backtest(strategy_data= strategy_data)
 
-            return {
-                "message": "Backtest completed",
-                "equity_curve_path": "outputs/curve.png",
-                "java_result": java_result,  # include Java service output too
-            }
 
-        return {"error": f"External API failed: {response.status_code}"}
-
+    except HTTPException as e:
+        raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         print("Error in run_backtest:", e)
         raise HTTPException(status_code=500, detail=str(e))

@@ -19,6 +19,7 @@ from app.models import *  # ensures both models are registered
 
 from app.routes.backtest import router as backtest_router
 from app.routes.equity_view import router as equity_router
+
 from app.constants.static_config import INDICATORS, UNIVERSES, OPERATORS, CONNECTORS, REBALACE, SIGNAL_TIMING, \
     RISK_TIMING, RANKING_ORDERS, SYSTEM_TYPE, STOPLOSS_TYPE, TAKEPROFIT_TYPE
 import pandas as pd
@@ -33,6 +34,7 @@ app = FastAPI()
 Base.metadata.create_all(bind=engine)
 app.include_router(backtest_router)
 app.include_router(equity_router)
+
 
 origins = [
     "http://localhost:3000",  # Default for Create React App

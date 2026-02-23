@@ -34,7 +34,11 @@ class MarketRegime(Base):
     stoploss_type = Column(String(10))
     takeprofit_type = Column(String(10))
     stoploss_pct = Column(Numeric(5, 2))
+    stoploss_dollar = Column(Numeric(5, 2))
     takeprofit_pct = Column(Numeric(5, 2))
+
+    takeprofit_dollar = Column(Numeric(5, 2))
+
     stoploss_timing = Column(String)
     takeprofit_timing = Column(String)
     atr_lookback_stp = Column(Numeric(5, 2))

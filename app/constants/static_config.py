@@ -1,15 +1,30 @@
 # Universes (e.g., for dropdowns)
 from dateutil.rrule import DAILY
 
+
+timeframe_map = {
+    'DAILY': 'D',
+    'WEEKLY': 'W',
+    'MONTHLY': 'M',
+    'HOURLY': 'H',
+    '5MIN': '5T',
+    '15MIN': '15T',
+    '30MIN': '30T',
+    'QUARTERLY': 'Q',
+    'YEARLY': 'Y'
+}
+
 UNIVERSES = {
     "sp500": "S&P 500",
     "r3000": "Russell 3000",
-    "liquid500": "Liquid 500"
+    "liquid500": "Liquid 500",
+    "spy" : "SPY"
 }
 UNIVERSES_Codes = {
     "S&P 500": "sp500",
     "Russell 3000": "r3000",
-    "Liquid 500": "liquid500"
+    "Liquid 500": "liquid500",
+    "SPY":"spy"
 }
 
 # Indicators (for rule building)

@@ -13,16 +13,29 @@ class PriceDataLoader:
         self.base_path = base_path
 
     def load_all(self,rebalance='',universe=''):
-        return {
-            f'{rebalance}_closes': pd.read_csv(PricePath.close(self.base_path),index_col=['Date'],parse_dates=True),
-            f'{rebalance}_opens': pd.read_csv(PricePath.opens(self.base_path),index_col=['Date'],parse_dates=True),
-            f'{rebalance}_highs': pd.read_csv(PricePath.highs(self.base_path),index_col=['Date'],parse_dates=True),
-            f'{rebalance}_lows': pd.read_csv(PricePath.lows(self.base_path),index_col=['Date'],parse_dates=True),
-            f'{universe}_universe': pd.read_csv(PricePath.universe(f'{self.base_path}/{universe}'),index_col=['Date'],parse_dates=True),
-            f'{rebalance}_unadjusted_closes': pd.read_csv(PricePath.unadjustedCloses(self.base_path),index_col=['Date'],parse_dates=True),
-            f'{rebalance}_volumes': pd.read_csv(PricePath.volumes(self.base_path),index_col=['Date'],parse_dates=True),
-            f'{rebalance}_turnovers': pd.read_csv(PricePath.turnovers(self.base_path),index_col=['Date'],parse_dates=True),
-        }
+        universe = universe.lower()
+        if universe != 'spy'.lower():
+
+
+            return {
+                f'{rebalance}_closes': pd.read_csv(PricePath.close(self.base_path),index_col=['Date'],parse_dates=True),
+                f'{rebalance}_opens': pd.read_csv(PricePath.opens(self.base_path),index_col=['Date'],parse_dates=True),
+                f'{rebalance}_highs': pd.read_csv(PricePath.highs(self.base_path),index_col=['Date'],parse_dates=True),
+                f'{rebalance}_lows': pd.read_csv(PricePath.lows(self.base_path),index_col=['Date'],parse_dates=True),
+                f'{universe}_universe': pd.read_csv(PricePath.universe(f'{self.base_path}/{universe}'),index_col=['Date'],parse_dates=True),
+                f'{rebalance}_unadjusted_closes': pd.read_csv(PricePath.unadjustedCloses(self.base_path),index_col=['Date'],parse_dates=True),
+                f'{rebalance}_volumes': pd.read_csv(PricePath.volumes(self.base_path),index_col=['Date'],parse_dates=True),
+                f'{rebalance}_turnovers': pd.read_csv(PricePath.turnovers(self.base_path),index_col=['Date'],parse_dates=True),
+            }
+        else:
+
+            spy_dict = {}
+            spy_dict[f'{rebalance}_spy'] = pd.read_csv(PricePath.spy_prices(self.base_path),index_col=['Date'],parse_dates=True)
+
+            spy_dict[f'{universe}_universe'] = pd.DataFrame(index=spy_dict[f'{rebalance}_spy'].index,data={'universe': 'SPY'})
+
+            return spy_dict
+
 
     def load_spy_close(self,rebalance=''):
         return {
@@ -38,7 +51,8 @@ class PriceDataLoader:
 
             if 'universe' not in k and 'trading_dates' not in k and 'all_dates' not in k :
                 # print(k)
-                price_data[k] = price_data[k].astype("float32")
+                if universe.lower() != 'spy':
+                    price_data[k] = price_data[k].astype("float32")
             price_data[k].to_parquet(f'{PricePath.getBacktestInputPath(universe=universe,strategy_name=strategy_name)}/{k}.parquet')
             # price_data[k].to_csv(f'{PricePath.getBacktestInputPath(universe=universe)}/{k}.csv')
 

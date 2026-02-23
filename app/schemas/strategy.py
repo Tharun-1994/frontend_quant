@@ -12,10 +12,13 @@ class Rule(BaseModel):
     operator: str
     value: float
     connector: str
+    
     label: Optional[str] = None
     value_type :Optional[str] = None
     value_indicator :Optional[str] = None
     value_lookback :Optional[int] = None
+
+    value_range_percent :Optional[int] = None
     params: Optional[Dict[str, Any]] = None
     def to_dict(self):
         return jsonable_encoder(self)
@@ -41,7 +44,13 @@ class MarketRegimeBase(BaseModel):
     stoploss_type: Optional[str] = None
     takeprofit_type: Optional[str] = None
     stoploss_pct: Optional[float] = None
+
+    stoploss_dollar: Optional[float] = None
+
     takeprofit_pct: Optional[float] = None
+
+    takeprofit_dollar: Optional[float] = None
+
     stoploss_timing: Optional[str] = None
     takeprofit_timing: Optional[str] = None
     atr_lookback_stp: Optional[int] = None

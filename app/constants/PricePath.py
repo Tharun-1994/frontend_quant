@@ -19,6 +19,7 @@ class PricePath:
     sp500base_path=r'C:\Tharun\Projects\backtest_data\universes\sp500'
     liquid500base_path=r'C:\Tharun\Projects\backtest_data\universes\liquid500'
     russell3000base_path=r'C:\Tharun\Projects\backtest_data\universes\russell3000'
+    spy_path = r'C:\Tharun\Projects\backtest_data\universes\spy'
 
     index_path=r'C:\Tharun\Projects\backtest_data\universes\index'
 
@@ -29,7 +30,8 @@ class PricePath:
         valid_universes = [
             UNIVERSES_Codes['S&P 500'],
             UNIVERSES_Codes['Liquid 500'],
-            UNIVERSES_Codes['Russell 3000']
+            UNIVERSES_Codes['Russell 3000'],
+            UNIVERSES_Codes['SPY']
         ]
 
         if universe in valid_universes:
@@ -91,4 +93,9 @@ class PricePath:
     @staticmethod
     def spy_closes(path):
         return f'{path}/daily_closes_spy.csv'
+
+
+    @staticmethod
+    def spy_prices(path):
+        return f'{path}/SPY.txt'
 
