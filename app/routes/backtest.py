@@ -1,12 +1,17 @@
+import io
+import os
 from http.client import HTTPException
+from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from numpy.testing.print_coercion_tables import print_new_cast_table
 from sqlalchemy import exists, func
 
 from sqlalchemy.orm import Session
 import json
 from plotly.utils import PlotlyJSONEncoder
+from starlette.responses import FileResponse, StreamingResponse
+
 from app.constants.PricePath import PricePath
 from app.constants.static_config import UNIVERSES, FUNCTION_MAPPER, UNIVERSES_Codes
 from app.database import get_db
@@ -933,6 +938,46 @@ def save_marketRegime_v2(marketregime: MarketRegimeBase, db: Session = Depends(g
 #         print(e)
 #         raise HTTPException(status_code=500, detail=str(e))
 #
+
+BASE_OUTPUT_DIR = r"C:\Tharun\Projects\backtest_data"
+
+
+@router.get("/api/{strategy_id}/download/{file_type}")
+def download_csv(
+    strategy_id: int,
+    file_type: str,
+    system_name: str = Query(...),
+    db: Session = Depends(get_db),
+):
+    if file_type not in ("tradelist", "equity"):
+        raise HTTPException(status_code=400, detail=f"Invalid file_type '{file_type}'.")
+
+    # Map file_type to actual JSON filename
+    file_names = {
+        "tradelist": "Tradelist.json",
+        "equity": "Equity.json",
+    }
+
+
+    file_path = f"{BASE_OUTPUT_DIR}/{system_name}/output/{file_names[file_type]}"
+
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+
+    try:
+        df = pd.read_json(file_path).T  # same as your equity endpoint
+        buffer = io.StringIO()
+        df.to_csv(buffer, index=True)
+        buffer.seek(0)
+
+        filename = f"{system_name}_{file_type}.csv"
+        return StreamingResponse(
+            iter([buffer.getvalue()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/api/{strategy_id}/equity")
 def get_equity(strategy_id: str, db: Session = Depends(get_db)):
