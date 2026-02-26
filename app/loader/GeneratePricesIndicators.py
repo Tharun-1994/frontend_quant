@@ -71,6 +71,276 @@ class GeneratePricesIndicators:
         return resampled_df
 
     @staticmethod
+    def _compute_atr_limits(marketRegime, price_data, rebalance, indicator_set):
+        """Compute ATR indicators needed for LIMIT order, Stoploss, Take Profit."""
+        atr_lookbacks = []
+
+        if (marketRegime.order_type and marketRegime.order_type == 'LIMIT_ATR'
+                and marketRegime.atr_limit_lookback and marketRegime.atr_limit_lookback > 0):
+            atr_lookbacks.append(marketRegime.atr_limit_lookback)
+
+        if (marketRegime.stoploss_type and marketRegime.stoploss_type == 'ATR_BASED'
+                and marketRegime.atr_lookback_stp and marketRegime.atr_lookback_stp > 0):
+            atr_lookbacks.append(marketRegime.atr_lookback_stp)
+
+        if (marketRegime.takeprofit_type and marketRegime.takeprofit_type == 'ATR_BASED'
+                and marketRegime.atr_lookback_tp and marketRegime.atr_lookback_tp > 0):
+            atr_lookbacks.append(marketRegime.atr_lookback_tp)
+
+        for lookback in atr_lookbacks:
+            key = f'{FUNCTION_MAPPER["atr"]}_{lookback}'
+            if key not in indicator_set:
+                result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER["atr"],
+                                                                 Highs=price_data[f'{rebalance}_highs'],
+                                                                 Lows=price_data[f'{rebalance}_lows'],
+                                                                 Closes=price_data[f'{rebalance}_closes'],
+                                                                 length=lookback)
+                indicator_set.add(key)
+                price_data[key] = result
+
+    @staticmethod
+    def _get_resampled_spy(price_data, rebalance):
+        """Return DAILY_spy resampled to the strategy's rebalance frequency."""
+        rebalance_timeframe = timeframe_map.get(rebalance, 'D')
+        return GeneratePricesIndicators.resample_to_timeframe(
+            price_data['DAILY_spy'], timeframe=rebalance_timeframe)
+
+    @staticmethod
+    def _compute_market_trend_rules(rules, marketRegime, price_data, rebalance, univ, indicator_set):
+        """Compute primary indicators for market trend rules."""
+        for rule in rules or []:
+            if rule.indicator == 'sma':
+                key = f'{marketRegime.regime_ticker.lower()}_{rule.indicator}_{rule.lookback}'
+                if key in indicator_set:
+                    continue
+
+                if univ.lower() == 'spy':
+                    daily_df = GeneratePricesIndicators._get_resampled_spy(price_data, rebalance)
+                    prices = daily_df[['Close']]
+                else:
+                    prices = price_data[f'{rebalance}_closes_{marketRegime.regime_ticker.lower()}']
+
+                result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[rule.indicator],
+                                                                 prices=prices, lookback=rule.lookback)
+
+                indicator_set.add(key)
+                price_data[key] = result
+
+            elif rule.indicator == 'atr':
+                key = f'{rule.indicator}_{rule.lookback}'
+                if key in indicator_set:
+                    continue
+
+                if univ.lower() == 'spy':
+                    daily_df = GeneratePricesIndicators._get_resampled_spy(price_data, rebalance)
+                    high_prices = daily_df[['High']].rename(columns={'High': 'spy'})
+                    low_prices = daily_df[['Low']].rename(columns={'Low': 'spy'})
+                    close_prices = daily_df[['Close']].rename(columns={'Close': 'spy'})
+                else:
+                    high_prices = price_data[f'{rebalance}_highs']
+                    low_prices = price_data[f'{rebalance}_lows']
+                    close_prices = price_data[f'{rebalance}_closes']
+
+                result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[rule.indicator],
+                                                                 Highs=high_prices, Lows=low_prices,
+                                                                 Closes=close_prices, length=rule.lookback)
+
+                indicator_set.add(key)
+                price_data[key] = result
+
+    @staticmethod
+    def _compute_market_trend_value_indicators(rules, price_data, rebalance, univ, indicator_set):
+        """Compute value-side indicators for market trend rules."""
+        for rule in rules or []:
+            if not rule.value_indicator:
+                continue
+
+            key = f'{rule.value_indicator}_{rule.value_lookback}'
+            if key in indicator_set:
+                continue
+
+            if rule.value_indicator == 'sma':
+                if univ.lower() == 'spy':
+                    daily_df = GeneratePricesIndicators._get_resampled_spy(price_data, rebalance)
+                    prices = daily_df[['Close']]
+                else:
+                    prices = price_data[f'{rebalance}_closes']
+
+                result = GeneratePricesIndicators.call_indicator(
+                    FUNCTION_MAPPER[rule.value_indicator],
+                    prices=prices, lookback=rule.value_lookback)
+
+            elif rule.value_indicator == 'atr':
+                if univ.lower() == 'spy':
+                    daily_df = GeneratePricesIndicators._get_resampled_spy(price_data, rebalance)
+                    high_prices = daily_df[['High']].rename(columns={'High': 'spy'})
+                    low_prices = daily_df[['Low']].rename(columns={'Low': 'spy'})
+                    close_prices = daily_df[['Close']].rename(columns={'Close': 'spy'})
+                else:
+                    high_prices = price_data[f'{rebalance}_highs']
+                    low_prices = price_data[f'{rebalance}_lows']
+                    close_prices = price_data[f'{rebalance}_closes']
+
+                result = GeneratePricesIndicators.call_indicator(
+                    FUNCTION_MAPPER[rule.value_indicator],
+                    Highs=high_prices, Lows=low_prices,
+                    Closes=close_prices, length=rule.value_lookback)
+
+            else:
+                continue
+
+            indicator_set.add(key)
+            price_data[key] = result
+    @staticmethod
+    def _compute_rule_indicators(rules, price_data, rebalance, univ, indicator_set):
+        """Compute the primary indicator for each rule."""
+        for rule in rules:
+            key = f'{rule.indicator}_{rule.lookback}'
+            if key in indicator_set:
+                continue
+
+            if rule.indicator in ('rsi', 'hv'):
+                result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[rule.indicator],
+                                                                 prices=price_data[f'{rebalance}_closes'],
+                                                                 n=rule.lookback)
+
+            elif rule.indicator in ('adx', 'atr'):
+                result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[rule.indicator],
+                                                                 Highs=price_data[f'{rebalance}_highs'],
+                                                                 Lows=price_data[f'{rebalance}_lows'],
+                                                                 Closes=price_data[f'{rebalance}_closes'],
+                                                                 length=rule.lookback)
+
+            elif rule.indicator == 'sma':
+                result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[rule.indicator],
+                                                                 prices=price_data[f'{rebalance}_closes'],
+                                                                 lookback=rule.lookback)
+
+            elif rule.indicator == 'crsi':
+                if univ == 'liquid500':
+                    result = pd.read_csv(f'{PricePath.liquid500base_path}/Lq500CRSI.csv',
+                                         index_col=['Date'], parse_dates=True)
+                elif univ == 'sp500':
+                    result = pd.read_csv(f'{PricePath.sp500base_path}/sp500CRSI.csv',
+                                         index_col=['Date'], parse_dates=True)
+                else:
+                    continue
+
+            elif rule.indicator == 'relative_momentum':
+                stock_indicator = GeneratePricesIndicators.call_indicator(
+                    FUNCTION_MAPPER[rule.indicator],
+                    df=price_data[f"{rebalance}_closes"], lookback=rule.lookback)
+                spy_indicator = GeneratePricesIndicators.call_indicator(
+                    FUNCTION_MAPPER[rule.indicator],
+                    df=price_data[f"{rebalance}_closes_spy"], lookback=rule.lookback)
+                result = stock_indicator.div(spy_indicator, axis=0)
+
+            elif rule.indicator == 'average_volume':
+                result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER['sma'],
+                                                                 prices=price_data[f'{rebalance}_volumes'],
+                                                                 lookback=rule.lookback)
+
+            elif rule.indicator == 'n_week_high_recent':
+                p = rule.params or {}
+                n_week_days = int(p.get("n_week_days", 252))
+                within_days = int(p.get("within_days", 20))
+                result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER['n_week_high_recent'],
+                                                                 closes=price_data[f'{rebalance}_closes'],
+                                                                 week_high_in_days=n_week_days,
+                                                                 high_last_days=within_days)
+                key = f'{rule.indicator}_{n_week_days}_{within_days}'
+
+            else:
+                continue
+
+            indicator_set.add(key)
+            price_data[key] = result
+
+    @staticmethod
+    def _compute_value_indicators(rules, price_data, rebalance, univ, indicator_set):
+        """Compute value-side indicators (the RHS of a comparison) for entry or exit rules."""
+        for rule in rules:
+            if not rule.value_indicator:
+                continue
+
+            if rule.value_indicator == 'sma':
+                key = f'{rule.value_indicator}_{rule.value_lookback}'
+                if key in indicator_set:
+                    continue
+
+                if univ.lower() == 'spy':
+                    rebalance_timeframe = timeframe_map.get(rebalance, 'D')
+                    daily_df = GeneratePricesIndicators.resample_to_timeframe(
+                        price_data['DAILY_spy'], timeframe=rebalance_timeframe)
+                    prices = daily_df[['Close']]
+                else:
+                    prices = price_data[f'{rebalance}_closes']
+
+                result = GeneratePricesIndicators.call_indicator(
+                    FUNCTION_MAPPER[rule.value_indicator],
+                    prices=prices,
+                    lookback=rule.value_lookback)
+
+                indicator_set.add(key)
+                price_data[key] = result
+
+            elif rule.value_indicator == 'range_close':
+                if univ.lower() != 'spy':
+                    continue
+
+                key = f'{rule.value_indicator}_{rule.value_range_percent}'
+                if key in indicator_set:
+                    continue
+
+                rebalance_timeframe = timeframe_map.get(rebalance, 'D')
+                daily_df = GeneratePricesIndicators.resample_to_timeframe(
+                    price_data['DAILY_spy'], timeframe=rebalance_timeframe)
+
+                close_prices = daily_df[['Close']].rename(columns={'Close': 'spy'})
+                high_prices = daily_df[['High']].rename(columns={'High': 'spy'})
+                low_prices = daily_df[['Low']].rename(columns={'Low': 'spy'})
+
+                day_range = high_prices - low_prices
+                range_close = low_prices + (day_range * (rule.value_range_percent / 100))
+
+                indicator_set.add(key)
+                price_data[key] = range_close
+
+    @staticmethod
+    def _compute_ranking(marketRegime, price_data, rebalance, univ, indicator_set):
+        """Compute ranking indicator."""
+        if not marketRegime.ranking or not marketRegime.ranking_lookback > 0:
+            return
+
+        # relative_momentum for ranking uses ROC (different from entry/exit)
+        if marketRegime.ranking == 'relative_momentum':
+            key = f'{marketRegime.ranking}_{marketRegime.ranking_lookback}'
+            if key in indicator_set:
+                return
+
+            rm1 = IndicatorCalculator.ROC(price_data[f"{rebalance}_closes"],
+                                          marketRegime.ranking_lookback)
+            rm2 = IndicatorCalculator.ROC(price_data[f"{rebalance}_closes_spy"],
+                                          marketRegime.ranking_lookback)
+            rm2_series = rm2.iloc[:, 0]
+            relative_momentum = rm1.div(rm2_series, axis=0)
+
+            indicator_set.add(key)
+            price_data[key] = relative_momentum
+            return
+
+        # Everything else (hv, atr, adx, sma, rsi, crsi) — same as rule indicators
+        # Build a temporary Rule-like object to reuse _compute_rule_indicators
+        ranking_rule = Rule(
+            indicator=marketRegime.ranking,
+            lookback=marketRegime.ranking_lookback,
+            operator='', value=0, connector=''
+        )
+        GeneratePricesIndicators._compute_rule_indicators(
+            [ranking_rule], price_data, rebalance, univ, indicator_set)
+
+
+    @staticmethod
     def generate(marketRegime : MarketRegimeBase,strategy: StrategyBucket):
         for univ in UNIVERSES.keys():
             if marketRegime.universe.lower() == univ.lower():
@@ -97,534 +367,67 @@ class GeneratePricesIndicators:
 
                 indictor_Set = set()
 
-                # This is For LIMIT ATR PRODUCTION
-                if (marketRegime.order_type and marketRegime.order_type == 'LIMIT_ATR'
-                        and  marketRegime.atr_limit_lookback and marketRegime.atr_limit_lookback > 0) :
-                    result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER["atr"],
-                                            Highs=price_data[f'{strategy.rebalance}_highs'],
-                                            Lows=price_data[f'{strategy.rebalance}_lows'],
-                                            Closes=price_data[f'{strategy.rebalance}_closes'], length=marketRegime.atr_limit_lookback)
-                    indictor_Set.add(f'{FUNCTION_MAPPER["atr"]}_{marketRegime.atr_limit_lookback}')
-                    price_data[f'{FUNCTION_MAPPER["atr"]}_{marketRegime.atr_limit_lookback}'] = result
-
-                # This is For LIMIT ATR PRODUCTION For Stoploss
-                if (marketRegime.stoploss_type and marketRegime.stoploss_type == 'ATR_BASED'
-                        and marketRegime.atr_lookback_stp and marketRegime.atr_lookback_stp > 0):
-                    result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER["atr"],
-                                                 Highs=price_data[f'{strategy.rebalance}_highs'],
-                                                 Lows=price_data[f'{strategy.rebalance}_lows'],
-                                                 Closes=price_data[f'{strategy.rebalance}_closes'],
-                                                 length=marketRegime.atr_lookback_stp)
-                    indictor_Set.add(f'{FUNCTION_MAPPER["atr"]}_{marketRegime.atr_lookback_stp}')
-                    price_data[f'{FUNCTION_MAPPER["atr"]}_{marketRegime.atr_lookback_stp}'] = result
-
-                # This is For LIMIT ATR PRODUCTION For Take Profit
-                if (marketRegime.takeprofit_type and marketRegime.takeprofit_type == 'ATR_BASED'
-                        and marketRegime.atr_lookback_tp and marketRegime.atr_lookback_tp > 0):
-                    result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER["atr"],
-                                            Highs=price_data[f'{strategy.rebalance}_highs'],
-                                            Lows=price_data[f'{strategy.rebalance}_lows'],
-                                            Closes=price_data[f'{strategy.rebalance}_closes'],
-                                            length=marketRegime.atr_lookback_tp)
-                    indictor_Set.add(f'{FUNCTION_MAPPER["atr"]}_{marketRegime.atr_lookback_tp}')
-                    price_data[f'{FUNCTION_MAPPER["atr"]}_{marketRegime.atr_lookback_tp}'] = result
+                # # This is For LIMIT ATR PRODUCTION
+                GeneratePricesIndicators._compute_atr_limits(marketRegime, price_data, strategy.rebalance,
+                                                             indictor_Set)
 
 
-                print()
                 entry_rules = list(GeneratePricesIndicators.iter_rules_from_tree(marketRegime.entry_rules_tree))
                 exit_rules = list(GeneratePricesIndicators.iter_rules_from_tree(marketRegime.exit_rules_tree))
                 market_trend_rules = list(GeneratePricesIndicators.iter_rules_from_tree(marketRegime.market_trend_rules_tree))
 
-
-                # Entry Rule  Generation
-                for rule in entry_rules:
-
-                    if rule.indicator == 'rsi':
-                        result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[rule.indicator], prices=price_data[f'{strategy.rebalance}_closes'], n=rule.lookback)
-                        indictor_Set.add(f'{rule.indicator}_{rule.lookback}')
-                        price_data[f'{rule.indicator}_{rule.lookback}'] = result
-
-                    elif rule.indicator == 'adx':
-                        result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[rule.indicator], Highs=price_data[f'{strategy.rebalance}_highs'],
-                                                Lows=price_data[f'{strategy.rebalance}_lows'],Closes=price_data[f'{strategy.rebalance}_closes'], length=rule.lookback)
-                        indictor_Set.add(f'{rule.indicator}_{rule.lookback}')
-                        price_data[f'{rule.indicator}_{rule.lookback}'] = result
-
-                    elif rule.indicator == 'atr':
-                        result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[rule.indicator], Highs=price_data[f'{strategy.rebalance}_highs'],
-                                                Lows=price_data[f'{strategy.rebalance}_lows'],Closes=price_data[f'{strategy.rebalance}_closes'], length=rule.lookback)
-                        indictor_Set.add(f'{rule.indicator}_{rule.lookback}')
-                        price_data[f'{rule.indicator}_{rule.lookback}'] = result
-
-                    elif rule.indicator == 'hv':
-
-                        result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[rule.indicator],
-                                                prices=price_data[f'{strategy.rebalance}_closes'],
-                                                n=rule.lookback)
-
-                        price_data[f'{rule.indicator}_{rule.lookback}'] = result
-                        indictor_Set.add(f'{rule.indicator}_{rule.lookback}')
-
-
-                    elif rule.indicator == 'sma':
-
-                        result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[rule.indicator],
-                                                prices=price_data[f'{strategy.rebalance}_closes'],
-                                                lookback=rule.lookback)
-
-                        price_data[f'{rule.indicator}_{rule.lookback}'] = result
-                        indictor_Set.add(f'{rule.indicator}_{rule.lookback}')
-
-                    elif rule.indicator == 'crsi' and  univ == 'liquid500':
-
-                        crsi_liq = pd.read_csv(f'{PricePath.liquid500base_path}/Lq500CRSI.csv',
-                                                index_col=['Date'], parse_dates=True)
-
-                        price_data[f'{rule.indicator}_{rule.lookback}'] = crsi_liq
-                        indictor_Set.add(f'{rule.indicator}_{rule.lookback}')
-                    elif rule.indicator == 'crsi' and univ == 'sp500':
-                        crsi_liq = pd.read_csv(f'{PricePath.sp500base_path}/sp500CRSI.csv',
-                                                index_col=['Date'], parse_dates=True)
-
-                        price_data[f'{rule.indicator}_{rule.lookback}'] = crsi_liq
-                        indictor_Set.add(f'{rule.indicator}_{rule.lookback}')
-
-                    elif rule.indicator == 'relative_momentum':
-
-                        # Indicator on stock closes
-                        stock_indicator = GeneratePricesIndicators.call_indicator(
-                            FUNCTION_MAPPER[rule.indicator],
-                            df=price_data[f"{strategy.rebalance}_closes"],
-                            lookback=rule.lookback,
-                        )
-
-                        # Indicator on SPY closes (broadcasted to all stock columns)
-                        spy_indicator = GeneratePricesIndicators.call_indicator(
-                            FUNCTION_MAPPER[rule.indicator],
-                            df=price_data[f"{strategy.rebalance}_closes_spy"],
-                            lookback=rule.lookback,
-                        )
-
-                        # Divide stock indicator by SPY indicator (aligning index)
-                        relative_momentum = stock_indicator.div(spy_indicator, axis=0)
-                        price_data[f'{rule.indicator}_{rule.lookback}'] = relative_momentum
-                        indictor_Set.add(f'{rule.indicator}_{rule.lookback}')
-
-                    elif rule.indicator == 'average_volume':
-                        result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER['sma'],
-                                                prices=price_data[f'{strategy.rebalance}_volumes'],
-                                                lookback=rule.lookback)
-
-                        price_data[f'{rule.indicator}_{rule.lookback}'] = result
-                        indictor_Set.add(f'{rule.indicator}_{rule.lookback}')
-
-                    elif rule.indicator == "n_week_high_recent":
-                        p = rule.params or {}
-                        n_week_days = int(p.get("n_week_days", 252))
-                        within_days = int(p.get("within_days", 20))
-                        result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER['n_week_high_recent'],
-                                                                         closes=price_data[f'{strategy.rebalance}_closes'],
-                                                                         week_high_in_days=n_week_days,high_last_days=within_days)
-
-                        price_data[f'{rule.indicator}_{n_week_days}_{within_days}'] = result
-                        indictor_Set.add(f'{rule.indicator}_{n_week_days}_{within_days}')
-
-
-
-
-                # Entry Value Indicators
-                for rule in entry_rules:
-                    if rule.value_indicator == 'sma':
-                        if f'{rule.value_indicator}_{rule.value_lookback}' not in indictor_Set:
-
-                            if univ.lower() != 'spy':
-                                result = GeneratePricesIndicators.call_indicator(
-                                    FUNCTION_MAPPER[rule.value_indicator],
-                                    prices=price_data[
-                                        f'{strategy.rebalance}_closes'],
-                                    lookback=rule.value_lookback)
-                            elif univ.lower() == 'spy' :
-
-                                rebalance_timeframe = timeframe_map.get(strategy.rebalance, 'D')
-                                daily_df = GeneratePricesIndicators.resample_to_timeframe(price_data['DAILY_spy'], timeframe=rebalance_timeframe)  # Remove days with no price data
-
-                                result = GeneratePricesIndicators.call_indicator(
-                                    FUNCTION_MAPPER[rule.value_indicator],
-                                    prices=daily_df[['Close']],
-                                    lookback=rule.value_lookback)
-
-
-
-                            price_data[f'{rule.value_indicator}_{rule.value_lookback}'] = result
-                            indictor_Set.add(f'{rule.value_indicator}_{rule.value_lookback}')
-
-
-                    elif rule.value_indicator == 'range_close':
-                        if univ.lower() == 'spy':
-                            print('')
-                            rebalance_timeframe = timeframe_map.get(strategy.rebalance, 'D')
-                            daily_df = GeneratePricesIndicators.resample_to_timeframe(price_data['DAILY_spy'],
-                                                                                      timeframe=rebalance_timeframe)
-
-                            close_prices = daily_df[['Close']].rename(columns={'Close': 'spy'})
-                            high_prices = daily_df[['High']].rename(columns={'High': 'spy'})
-                            low_prices = daily_df[['Low']].rename(columns={'Low': 'spy'})
-
-                            day_range = high_prices - low_prices
-                            range_close = low_prices + (day_range * (rule.value_range_percent/100))
-
-                            price_data[f'{rule.value_indicator}_{rule.value_range_percent}'] = range_close
-                            indictor_Set.add(f'{rule.value_indicator}_{rule.value_range_percent}')
-
-
-
-                # Exit Rule  Generation
-                for rule in exit_rules:
-                    if rule.indicator == 'rsi':
-                        if f'{rule.indicator}_{rule.lookback}' not in indictor_Set:
-                            result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[rule.indicator], prices=price_data[f'{strategy.rebalance}_closes'], n=rule.lookback)
-                            price_data[f'{rule.indicator}_{rule.lookback}'] = result
-
-                    elif rule.indicator == 'adx':
-                        if f'{rule.indicator}_{rule.lookback}' not in indictor_Set:
-                            result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[rule.indicator], Highs=price_data[f'{strategy.rebalance}_highs'],
-                                                    Lows=price_data[f'{strategy.rebalance}_lows'],Closes=price_data[f'{strategy.rebalance}_closes'], length=rule.lookback)
-                            indictor_Set.add(f'{rule.indicator}_{rule.lookback}')
-                            price_data[f'{rule.indicator}_{rule.lookback}'] = result
-
-
-                    elif rule.indicator == 'atr':
-                        if f'{rule.indicator}_{rule.lookback}' not in indictor_Set:
-                            result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[rule.indicator], Highs=price_data[f'{strategy.rebalance}_highs'],
-                                                    Lows=price_data[f'{strategy.rebalance}_lows'],Closes=price_data[f'{strategy.rebalance}_closes'], length=rule.lookback)
-                            indictor_Set.add(f'{rule.indicator}_{rule.lookback}')
-                            price_data[f'{rule.indicator}_{rule.lookback}'] = result
-
-
-                    elif rule.indicator == 'hv':
-                        if f'{rule.indicator}_{rule.lookback}' not in indictor_Set:
-                            result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[rule.indicator],
-                                                    prices=price_data[f'{strategy.rebalance}_closes'],
-                                                    n=rule.lookback)
-
-                            price_data[f'{rule.indicator}_{rule.lookback}'] = result
-                            indictor_Set.add(f'{rule.indicator}_{rule.lookback}')
-
-                    elif rule.indicator == 'sma':
-                        if f'{rule.indicator}_{rule.lookback}' not in indictor_Set:
-                            result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[rule.indicator],
-                                                    prices=price_data[f'{strategy.rebalance}_closes'],
-                                                    lookback=rule.lookback)
-
-                            price_data[f'{rule.indicator}_{rule.lookback}'] = result
-                            indictor_Set.add(f'{rule.indicator}_{rule.lookback}')
-
-                    elif rule.indicator == 'crsi' and univ == 'liquid500':
-                        if f'{rule.indicator}_{rule.lookback}' not in indictor_Set:
-                            crsi_liq = pd.read_csv(f'{PricePath.liquid500base_path}/Lq500CRSI.csv',
-                                                   index_col=['Date'], parse_dates=True)
-
-                            price_data[f'{rule.indicator}_{rule.lookback}'] = crsi_liq
-                            indictor_Set.add(f'{rule.indicator}_{rule.lookback}')
-
-                    elif rule.indicator == 'crsi' and univ == 'sp500':
-                        crsi_liq = pd.read_csv(f'{PricePath.sp500base_path}/sp500CRSI.csv',
-                                                index_col=['Date'], parse_dates=True)
-
-                        price_data[f'{rule.indicator}_{rule.lookback}'] = crsi_liq
-                        indictor_Set.add(f'{rule.indicator}_{rule.lookback}')
-
-                    elif rule.indicator == 'relative_momentum':
-                        if f'{rule.indicator}_{rule.lookback}' not in indictor_Set:
-                            # Indicator on stock closes
-                            stock_indicator = GeneratePricesIndicators.call_indicator(
-                                FUNCTION_MAPPER[rule.indicator],
-                                df=price_data[f"{strategy.rebalance}_closes"],
-                                lookback=rule.lookback,
-                            )
-
-                            # Indicator on SPY closes (broadcasted to all stock columns)
-                            spy_indicator = GeneratePricesIndicators.call_indicator(
-                                FUNCTION_MAPPER[rule.indicator],
-                                df=price_data[f"{strategy.rebalance}_closes_spy"],
-                                lookback=rule.lookback,
-                            )
-
-                            # Divide stock indicator by SPY indicator (aligning index)
-                            relative_momentum = stock_indicator.div(spy_indicator, axis=0)
-                            price_data[f'{rule.indicator}_{rule.lookback}'] = relative_momentum
-                            indictor_Set.add(f'{rule.indicator}_{rule.lookback}')
-
-                    elif rule.indicator == "n_week_high_recent":
-                        p = rule.params or {}
-                        n_week_days = int(p.get("n_week_days", 252))
-                        within_days = int(p.get("within_days", 20))
-                        result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER['n_week_high_recent'],
-                                                                         closes=price_data[f'{strategy.rebalance}_closes'],
-                                                                         week_high_in_days=n_week_days,high_last_days=within_days)
-
-                        price_data[f'{rule.indicator}_{n_week_days}_{within_days}'] = result
-                        indictor_Set.add(f'{rule.indicator}_{n_week_days}_{within_days}')
-
-
-                # Exit Value Indicators
-                # Exit Value Indicators
-                for rule in exit_rules:
-                    if rule.value_indicator == 'sma':
-                        indicator_key = f'{rule.value_indicator}_{rule.value_lookback}'
-
-                        if indicator_key not in indictor_Set:
-                            # Determine price data source based on universe
-                            if univ.lower() == 'spy':
-                                rebalance_timeframe = timeframe_map.get(strategy.rebalance, 'D')
-                                daily_df = GeneratePricesIndicators.resample_to_timeframe(
-                                    price_data['DAILY_spy'],
-                                    timeframe=rebalance_timeframe
-                                )
-                                prices = daily_df[['Close']]
-                            else:
-                                prices = price_data[f'{strategy.rebalance}_closes']
-
-                            # Calculate indicator
-                            result = GeneratePricesIndicators.call_indicator(
-                                FUNCTION_MAPPER[rule.value_indicator],
-                                prices=prices,
-                                lookback=rule.value_lookback
-                            )
-
-                            indictor_Set.add(f'{rule.value_indicator}_{rule.value_lookback}')
-                            price_data[f'{rule.value_indicator}_{rule.value_lookback}'] = result
-
-                    elif rule.value_indicator == 'rangeclose':
-                        print('')
-
+                #Entry Indicator Rules
+                GeneratePricesIndicators._compute_rule_indicators(entry_rules, price_data, strategy.rebalance, univ,
+                                                                  indictor_Set)
+                #Entry Value Indicators Rules
+                GeneratePricesIndicators._compute_value_indicators(entry_rules, price_data, strategy.rebalance, univ,
+                                                                   indictor_Set)
+                #Exit Indicator Rules
+                GeneratePricesIndicators._compute_rule_indicators(exit_rules, price_data, strategy.rebalance, univ,
+                                                                  indictor_Set)
+
+                #Exit Value Indicator Value
+                GeneratePricesIndicators._compute_value_indicators(exit_rules, price_data, strategy.rebalance, univ,
+                                                                   indictor_Set)
 
 
                 # Ranking Indicator Generation
-                if (marketRegime.ranking and marketRegime.ranking_lookback > 0):
-
-                    if marketRegime.ranking == 'hv':
-                        if f'{marketRegime.ranking}_{marketRegime.ranking_lookback}' not in indictor_Set:
-                            result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[marketRegime.ranking],
-                                                    prices=price_data[f'{strategy.rebalance}_closes'], n=marketRegime.ranking_lookback)
-
-                            price_data[f'{marketRegime.ranking}_{marketRegime.ranking_lookback}'] = result
-
-                            indictor_Set.add(f'{marketRegime.ranking}_{marketRegime.ranking_lookback}')
-                            price_data[f'{marketRegime.ranking}_{marketRegime.ranking_lookback}'] = result
-
-                    elif marketRegime.ranking == 'atr':
-                        if f'{marketRegime.ranking}_{marketRegime.ranking_lookback}' not in indictor_Set:
-                            result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[marketRegime.ranking],
-                                                    Highs=price_data[f'{strategy.rebalance}_highs'],
-                                                    Lows=price_data[f'{strategy.rebalance}_lows'],
-                                                    Closes=price_data[f'{strategy.rebalance}_closes'],
-                                                    length=marketRegime.ranking_lookback)
-
-                            indictor_Set.add(f'{marketRegime.ranking}_{marketRegime.ranking_lookback}')
-                            price_data[f'{marketRegime.ranking}_{marketRegime.ranking_lookback}'] = result
-
-                    elif marketRegime.ranking == 'adx':
-                        if f'{marketRegime.ranking}_{marketRegime.ranking_lookback}' not in indictor_Set:
-                            result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[marketRegime.ranking],
-                                                    Highs=price_data[f'{strategy.rebalance}_highs'],
-                                                    Lows=price_data[f'{strategy.rebalance}_lows'],
-                                                    Closes=price_data[f'{strategy.rebalance}_closes'],
-                                                    length=marketRegime.ranking_lookback)
-
-                            indictor_Set.add(f'{marketRegime.ranking}_{marketRegime.ranking_lookback}')
-                            price_data[f'{marketRegime.ranking}_{marketRegime.ranking_lookback}'] = result
-
-                    elif marketRegime.ranking == 'sma':
-                        if f'{marketRegime.ranking}_{marketRegime.ranking_lookback}' not in indictor_Set:
-                            result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[marketRegime.ranking],
-                                                    prices=price_data[f'{strategy.rebalance}_closes'],
-                                                    lookback=marketRegime.ranking_lookback)
-
-                            indictor_Set.add(f'{marketRegime.ranking}_{marketRegime.ranking_lookback}')
-                            price_data[f'{marketRegime.ranking}_{marketRegime.ranking_lookback}'] = result
-
-                    elif marketRegime.ranking == 'rsi':
-
-                        if f'{marketRegime.ranking}_{marketRegime.ranking_lookback}' not in indictor_Set:
-
-                            result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[marketRegime.ranking],
-                                                    prices=price_data[f'{strategy.rebalance}_closes'], n=marketRegime.ranking_lookback)
-                            indictor_Set.add(f'{marketRegime.ranking}_{marketRegime.ranking_lookback}')
-                            price_data[f'{marketRegime.ranking}_{marketRegime.ranking_lookback}'] = result
-
-                    elif marketRegime.ranking == 'crsi' and univ == 'liquid500':
-
-                        if f'{marketRegime.ranking}_{marketRegime.ranking_lookback}' not in indictor_Set:
-                            crsi_liq = pd.read_csv(f'{PricePath.liquid500base_path}/Lq500CRSI.csv',
-                                                   index_col=['Date'], parse_dates=True)
-
-                            price_data[f'{marketRegime.ranking}_{marketRegime.ranking_lookback}'] = crsi_liq
-                            indictor_Set.add(f'{marketRegime.ranking}_{marketRegime.ranking_lookback}')
-
-                    elif marketRegime.ranking == 'crsi' and univ == 'sp500':
-                        crsi_sp = pd.read_csv(f'{PricePath.sp500base_path}/sp500CRSI.csv',
-                                                index_col=['Date'], parse_dates=True)
-
-                        price_data[f'{marketRegime.ranking}_{marketRegime.ranking_lookback}'] = crsi_sp
-                        indictor_Set.add(f'{marketRegime.ranking}_{marketRegime.ranking_lookback}')
-
-                    elif marketRegime.ranking == 'relative_momentum':
-
-                        rm1 = IndicatorCalculator.ROC(price_data[f"{strategy.rebalance}_closes"],
-                                                      marketRegime.ranking_lookback)
-                        rm2 = IndicatorCalculator.ROC(price_data[f"{strategy.rebalance}_closes_spy"],
-                                                      marketRegime.ranking_lookback)
-
-                        # take SPY ROC as Series
-                        rm2_series = rm2.iloc[:, 0]
-
-                        # row-wise divide, no column mismatch
-                        relative_momentum = rm1.div(rm2_series, axis=0)
-                        price_data[f'{marketRegime.ranking}_{marketRegime.ranking_lookback}'] = relative_momentum
-                        indictor_Set.add(f'{marketRegime.ranking}_{marketRegime.ranking_lookback}')
+                GeneratePricesIndicators._compute_ranking(marketRegime, price_data, strategy.rebalance, univ,
+                                                          indictor_Set)
 
 
                 # Market Trend Rule  Generation
-
-                for rule in market_trend_rules or []:
-                    if rule.indicator == 'sma':
-
-
-
-                        if f'{rule.indicator}_{rule.lookback}' not in indictor_Set:
-
-                            if univ == 'SPY':
-                                rebalance_timeframe = timeframe_map.get(strategy.rebalance, 'D')
-                                daily_df = GeneratePricesIndicators.resample_to_timeframe(
-                                    price_data['DAILY_spy'],
-                                    timeframe=rebalance_timeframe
-                                )
-                                prices = daily_df[['Close']]
-                                result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[rule.indicator],
-                                                        prices=prices,
-                                                        lookback=rule.lookback)
-                            else:
-
-                                result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[rule.indicator],
-                                                        prices=price_data[f'{strategy.rebalance}_closes_{marketRegime.regime_ticker.lower()}'],
-                                                        lookback=rule.lookback)
-
-                            price_data[f'{marketRegime.regime_ticker.lower()}_{rule.indicator}_{rule.lookback}'] = result
-                            indictor_Set.add(f'{marketRegime.regime_ticker.lower()}_{rule.indicator}_{rule.lookback}')
-
-                    elif rule.indicator == 'atr':
-                        if f'{rule.indicator}_{rule.lookback}' not in indictor_Set:
-
-                            if univ.lower() == 'spy':
-                                rebalance_timeframe = timeframe_map.get(strategy.rebalance, 'D')
-                                daily_df = GeneratePricesIndicators.resample_to_timeframe(price_data['DAILY_spy'],timeframe=rebalance_timeframe)
-
-                                close_prices = daily_df[['Close']].rename(columns={'Close': 'spy'})
-                                high_prices = daily_df[['High']].rename(columns={'High': 'spy'})
-                                low_prices = daily_df[['Low']].rename(columns={'Low': 'spy'})
-
-                                result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[rule.indicator], Highs=high_prices,
-                                                        Lows=low_prices,Closes=close_prices, length=rule.lookback)
-                            else:
-
-                                result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[rule.indicator], Highs=price_data[f'{strategy.rebalance}_highs'],
-                                                        Lows=price_data[f'{strategy.rebalance}_lows'],Closes=price_data[f'{strategy.rebalance}_closes'], length=rule.lookback)
-                            indictor_Set.add(f'{rule.indicator}_{rule.lookback}')
-                            price_data[f'{rule.indicator}_{rule.lookback}'] = result
-
+                GeneratePricesIndicators._compute_market_trend_rules(market_trend_rules, marketRegime, price_data,
+                                                                     strategy.rebalance, univ, indicator_set=indictor_Set)
 
                 # Market Trend Value Indicators
-                for rule in market_trend_rules:
-                    if rule.value_indicator == 'sma':
-                        indicator_key = f'{rule.value_indicator}_{rule.value_lookback}'
+                GeneratePricesIndicators._compute_market_trend_value_indicators(market_trend_rules, price_data,
+                                                                                strategy.rebalance, univ, indicator_set= indictor_Set)
 
-                        if indicator_key not in indictor_Set:
-                            # Determine price data source based on universe
-                            if univ.lower() == 'spy':
-                                rebalance_timeframe = timeframe_map.get(strategy.rebalance, 'D')
-                                daily_df = GeneratePricesIndicators.resample_to_timeframe(
-                                    price_data['DAILY_spy'],
-                                    timeframe=rebalance_timeframe
-                                )
-                                prices = daily_df[['Close']]
-                            else:
-                                prices = price_data[f'{strategy.rebalance}_closes']
-
-                            # Calculate indicator
-                            result = GeneratePricesIndicators.call_indicator(
-                                FUNCTION_MAPPER[rule.value_indicator],
-                                prices=prices,
-                                lookback=rule.value_lookback
-                            )
-                            indictor_Set.add(f'{rule.value_indicator}_{rule.value_lookback}')
-                            price_data[f'{rule.value_indicator}_{rule.value_lookback}'] = result
-
-                    elif rule.value_indicator == 'atr':
-                        if f'{rule.value_indicator}_{rule.value_lookback}' not in indictor_Set:
-
-                            if univ.lower() == 'spy':
-                                rebalance_timeframe = timeframe_map.get(strategy.rebalance, 'D')
-                                daily_df = GeneratePricesIndicators.resample_to_timeframe(
-                                    price_data['DAILY_spy'],
-                                    timeframe=rebalance_timeframe
-                                )
-
-                                close_prices = daily_df[['Close']].rename(columns={'Close': 'spy'})
-                                high_prices = daily_df[['High']].rename(columns={'High': 'spy'})
-                                low_prices = daily_df[['Low']].rename(columns={'Low': 'spy'})
-
-                                # Calculate indicator
-                                result = GeneratePricesIndicators.call_indicator(
-                                    FUNCTION_MAPPER[rule.value_indicator],
-                                    Highs=high_prices,
-                                    Lows=low_prices,
-                                    Closes=close_prices,
-                                    length=rule.value_lookback
-                                )
-                            else:
-                                # Calculate indicator
-                                result = GeneratePricesIndicators.call_indicator(
-                                    FUNCTION_MAPPER[rule.value_indicator],
-                                    Highs=price_data[f'{strategy.rebalance}_highs'],
-                                    Lows=price_data[f'{strategy.rebalance}_lows'],
-                                    Closes=price_data[f'{strategy.rebalance}_closes'],
-                                    length=rule.value_lookback
-                                )
-                            indictor_Set.add(f'{rule.value_indicator}_{rule.value_lookback}')
-                            price_data[f'{rule.value_indicator}_{rule.value_lookback}'] = result
-
-                if univ.lower() == 'spy':
-
-                    # All Dates Generation
-                    all_dates = price_data['DAILY_spy']['Close'].index
-                    all_dates_df = pd.DataFrame(data=all_dates, columns=['Date'])
-                    price_data[f'all_dates'] = all_dates_df
-
-                    # Max look back now it takes the default.
-                    trading_dates = loader.get_trading_dates(start_trading=strategy.start_date,
-                                                             end_trading=strategy.end_date,
-                                                             use_data=True,
-                                                             daily_closes=price_data['DAILY_spy'][['Close']]
-                                                             , all_dates=all_dates, rebalance=strategy.rebalance)
-                    trading_days_df = pd.DataFrame(data=trading_dates, columns=['Date'])
-                    price_data[f'trading_dates'] = trading_days_df
-                else:
-
-                    # All Dates Generation
-                    all_dates = price_data[f'{strategy.rebalance}_closes'].index
-                    all_dates_df = pd.DataFrame(data=all_dates, columns=['Date'])
-                    price_data[f'all_dates'] = all_dates_df
-
-
-                    # Max look back now it takes the default.
-                    trading_dates = loader.get_trading_dates( start_trading=strategy.start_date, end_trading=strategy.end_date,
-                                             use_data=True, daily_closes=price_data[f'{strategy.rebalance}_closes']
-                                                             ,all_dates= all_dates,rebalance=strategy.rebalance)
-                    trading_days_df = pd.DataFrame(data=trading_dates, columns=['Date'])
-                    price_data[f'trading_dates'] = trading_days_df
+                # Trading Days
+                GeneratePricesIndicators._compute_trading_dates(price_data, strategy.rebalance, univ, strategy, loader)
 
 
                 loader.uploadCommonPath(price_data=price_data,universe=univ,strategy_name = strategy.name)
 
+    @staticmethod
+    def _compute_trading_dates(price_data, rebalance, univ, strategy, loader):
+        """Compute all_dates and trading_dates."""
+        if univ.lower() == 'spy':
+            daily_closes = price_data['DAILY_spy'][['Close']]
+            all_dates = price_data['DAILY_spy']['Close'].index
+        else:
+            daily_closes = price_data[f'{rebalance}_closes']
+            all_dates = price_data[f'{rebalance}_closes'].index
 
+        price_data['all_dates'] = pd.DataFrame(data=all_dates, columns=['Date'])
+
+        trading_dates = loader.get_trading_dates(
+            start_trading=strategy.start_date,
+            end_trading=strategy.end_date,
+            use_data=True,
+            daily_closes=daily_closes,
+            all_dates=all_dates,
+            rebalance=rebalance)
+
+        price_data['trading_dates'] = pd.DataFrame(data=trading_dates, columns=['Date'])

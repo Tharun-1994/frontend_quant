@@ -10,6 +10,7 @@ import os
 import pandas as pd
 import logging
 
+from app.Backtest.backtest_engine_etf import ETFBacktestEngine
 from app.schemas import StrategyRequest
 
 logging.basicConfig(filename="logfilename.log", filemode='w', level=logging.WARN)
@@ -18,40 +19,14 @@ class BacktestEngine:
 
 
     def backtest_tradestation(self, strategy_data: StrategyRequest):
-        portfolio_Dict = {}
+        engine = ETFBacktestEngine()
+        return engine.run(
+            strategy_data=strategy_data,
+            base_input_path=f'C:/Tharun/Projects/backtest_data/{strategy_data.name}/input/{strategy_data.regimes[0].universe.lower()}',
+            output_path=f'C:/Tharun/Projects/backtest_data/{strategy_data.name}/output'
+        )
 
-
-
-        # for d in tqdm(data_obj.all_dates, desc='Running Backtest...'):
-        #     # ******---------------- EXECUTION CODE ----------------******
-        #     # ******---------------- MAIN D-LOOP LOGIC STARTS HERE ----------------******
-        #     spy_index = data_obj.spy_prices['Close'].index.get_loc(d)
-        #     if d > start_date:
-        #
-        #         # -------Start Of Day-------------------
-        #         if d == dt.date(2024, 3, 1):
-        #             bla = 1
-        #
-        #
-        #         #--------Close Of Day -----------------------
-        #
-        #     # This has a catch that when its the last day we close all trades and finish backtest
-        #     if d == data_obj.all_dates[-1]:
-        #         datecode = dt.datetime.now()
-        #         datecode_str = datecode.strftime('%Y%m%d_%H%M')
-        #
-        #
-        #         for key in portfolio_Dict:
-        #             portfolio_Dict.get(key).end_of_backtest(d)
-        #
-        #         if not portfolio_Dict['one'].optimise:
-        #             count = 0
-        #             datecode = dt.datetime.now()
-        #             datecode_str = datecode.strftime('%Y%m%d_%H%M')
-        #
-        #             print(f"\n--- Backtesting completed. ---")
-
-        return portfolio_Dict
+        # return portfolio_Dict
 
 
 
