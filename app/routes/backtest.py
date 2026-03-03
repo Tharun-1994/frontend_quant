@@ -998,7 +998,7 @@ def get_equity(strategy_id: str, db: Session = Depends(get_db)):
         except Exception:
             raise HTTPException(status_code=404, detail="Equity file not found")
 
-        df["equityValue"] = df["equityValue"] - 100000
+        df["equityValue"] = df["equityValue"] - 37500
         df["dailyDrawdown"] = -1 * df["dailyDrawdown"]
         df.index.name = "date"
 

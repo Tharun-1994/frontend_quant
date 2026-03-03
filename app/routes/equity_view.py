@@ -30,7 +30,7 @@ def get_equity_chart_json(request: Request,strategy_name: str):
     equity_df.index.name = "date"
     equity_df = equity_df.reset_index()
     equity_df['date'] = pd.to_datetime(equity_df['date'])  # ✅ Parse date column
-    equity_df['equityValue'] = equity_df['equityValue'] - 100000
+    equity_df['equityValue'] = equity_df['equityValue'] - 37500
     if equity_df is not None:
         fig = make_subplots(
             rows=2, cols=1,

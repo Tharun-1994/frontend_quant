@@ -126,17 +126,17 @@ class ETFBacktestEngine:
 
             # ============ END OF DAY ==================================
 
-            # 4. Mark to market
+            # 4. Mark to market (every day for equity curve)
             portfolio.mark_to_market(d, today_close)
 
-            # 5. Update day count
+            # --- Only on rebalance/trading dates ----------------------
+            if d not in trading_dates:
+                continue
+
+            # 5. Update day count (TRADING days only — matches TradeStation)
             if has_pos:
                 portfolio.update_trade_day_count()
                 portfolio.bars_since_entry += 1
-
-            # --- Only on rebalance dates ------------------------------
-            if d not in trading_dates:
-                continue
 
             # 6a. Max-time check
             if has_pos and active_rc is not None:
@@ -210,31 +210,41 @@ class ETFBacktestEngine:
         return None, None
 
     # ------------------------------------------------------------------
-    #  Intraday SL/TP — numpy arrays, zero pandas overhead
+    #  Intraday SL/TP — TradeStation-style: check profit at minute
+    #  bar CLOSE, exit at NEXT MINUTE BAR's OPEN
     # ------------------------------------------------------------------
     def _intraday_sl_tp_fast(self, d, get_minute, portfolio, rc) -> bool:
-        """Returns True if trade was closed."""
+        """
+        Mirrors TradeStation IntrabarOrderGeneration:
+            if positionprofit >= TP then sell next bar at market;
+            if positionprofit <= -SL then sell next bar at market;
+
+        - Evaluate position profit at each minute bar's CLOSE
+        - If triggered: exit at NEXT minute bar's OPEN
+        - If triggered on LAST bar of day: set pending_exit → next day's open
+
+        Returns True if trade was closed (same-day exit).
+        """
         trade = portfolio.trade_logger[portfolio.live_trade]
         entry_price = trade['entryPrice']
         amount = trade['quantity']
 
-        # Compute SL price
-        sl_price = None
-        if rc['sl_timing'] == 'INTRADAY':
-            if rc['sl_type'] == 'DOLLAR_BASED' and rc['sl_dollar'] > 0:
-                sl_price = entry_price - (rc['sl_dollar'] / amount)
-            elif rc['sl_type'] == 'PCT_BASED' and rc['sl_pct'] > 0:
-                sl_price = entry_price * (1 - rc['sl_pct'] / 100)
-
-        # Compute TP price
-        tp_price = None
+        # Determine dollar thresholds
+        tp_threshold = 0.0  # 0 = disabled
         if rc['tp_timing'] == 'INTRADAY':
             if rc['tp_type'] == 'DOLLAR_BASED' and rc['tp_dollar'] > 0:
-                tp_price = entry_price + (rc['tp_dollar'] / amount)
+                tp_threshold = rc['tp_dollar']
             elif rc['tp_type'] == 'PCT_BASED' and rc['tp_pct'] > 0:
-                tp_price = entry_price * (1 + rc['tp_pct'] / 100)
+                tp_threshold = trade['entryValue'] * (rc['tp_pct'] / 100)
 
-        if sl_price is None and tp_price is None:
+        sl_threshold = 0.0  # 0 = disabled
+        if rc['sl_timing'] == 'INTRADAY':
+            if rc['sl_type'] == 'DOLLAR_BASED' and rc['sl_dollar'] > 0:
+                sl_threshold = rc['sl_dollar']
+            elif rc['sl_type'] == 'PCT_BASED' and rc['sl_pct'] > 0:
+                sl_threshold = trade['entryValue'] * (rc['sl_pct'] / 100)
+
+        if tp_threshold == 0.0 and sl_threshold == 0.0:
             return False
 
         arrays = get_minute(d)
@@ -245,36 +255,43 @@ class ETFBacktestEngine:
         n = len(opens)
 
         for i in range(n):
-            o = opens[i]
-            h = highs[i]
-            lo = lows[i]
+            # Position profit at this minute bar's CLOSE
+            profit = amount * (closes[i] - entry_price)
 
-            # Stop-loss
-            if sl_price is not None:
-                if o <= sl_price:
-                    portfolio.close_trade(d, round(float(o), 2),
-                                          f'StopLoss Hit: {sl_price:.2f}', 'open')
+            # --- Take-Profit check ---
+            if tp_threshold > 0.0 and profit >= tp_threshold:
+                if i + 1 < n:
+                    # Next minute bar exists today → exit at its open
+                    exit_price = round(float(opens[i + 1]), 2)
+                    portfolio.close_trade(
+                        d, exit_price,
+                        f'TakeProfit Hit: profit ${profit:.0f} >= ${tp_threshold:.0f}',
+                        'next_minute_open')
                     return True
-                if lo <= sl_price:
-                    portfolio.close_trade(d, round(sl_price, 2),
-                                          f'StopLoss Hit: {sl_price:.2f}', 'stoploss price')
-                    return True
+                else:
+                    # Last bar of day → exit at next day's open
+                    portfolio.pending_exit = (
+                        f'TakeProfit Hit: profit ${profit:.0f} >= ${tp_threshold:.0f}')
+                    return False  # not closed yet, pending for tomorrow
 
-            # Take-profit
-            if tp_price is not None:
-                if o >= tp_price:
-                    portfolio.close_trade(d, round(float(o), 2),
-                                          f'TakeProfit Hit: {tp_price:.2f}', 'open')
+            # --- Stop-Loss check ---
+            if sl_threshold > 0.0 and profit <= -sl_threshold:
+                if i + 1 < n:
+                    exit_price = round(float(opens[i + 1]), 2)
+                    portfolio.close_trade(
+                        d, exit_price,
+                        f'StopLoss Hit: loss ${abs(profit):.0f} >= ${sl_threshold:.0f}',
+                        'next_minute_open')
                     return True
-                if h >= tp_price:
-                    portfolio.close_trade(d, round(tp_price, 2),
-                                          f'TakeProfit Hit: {tp_price:.2f}', 'takeprofit price')
-                    return True
+                else:
+                    portfolio.pending_exit = (
+                        f'StopLoss Hit: loss ${abs(profit):.0f} >= ${sl_threshold:.0f}')
+                    return False
 
         return False
 
     # ------------------------------------------------------------------
-    #  Close-of-day SL/TP
+    #  Close-of-day SL/TP (CLOSE and NEXT_BAR_OPEN timing modes)
     # ------------------------------------------------------------------
     @staticmethod
     def _check_close_sl_tp_fast(d, today_close, portfolio, rc) -> bool:
@@ -282,32 +299,46 @@ class ETFBacktestEngine:
         trade = portfolio.trade_logger[portfolio.live_trade]
         entry_price = trade['entryPrice']
         amount = trade['quantity']
-        current_pnl = (today_close - entry_price) * amount
+        position_profit = (today_close - entry_price) * amount
 
-        # CLOSE timing SL
-        if rc['sl_timing'] == 'CLOSE' and rc['sl_dollar'] > 0:
-            sl_p = entry_price - (rc['sl_dollar'] / amount)
-            if today_close < sl_p:
+        # CLOSE timing SL — check at close, exit at close
+        if rc['sl_timing'] == 'CLOSE':
+            sl_threshold = 0.0
+            if rc['sl_type'] == 'DOLLAR_BASED' and rc['sl_dollar'] > 0:
+                sl_threshold = rc['sl_dollar']
+            elif rc['sl_type'] == 'PCT_BASED' and rc['sl_pct'] > 0:
+                sl_threshold = trade['entryValue'] * (rc['sl_pct'] / 100)
+            if sl_threshold > 0 and position_profit <= -sl_threshold:
                 portfolio.close_trade(d, today_close,
-                                      f'StopLoss Hit: {sl_p:.2f}', 'close')
+                                      f'StopLoss Hit at close', 'close')
                 return True
 
-        # CLOSE timing TP
-        if rc['tp_timing'] == 'CLOSE' and rc['tp_dollar'] > 0:
-            tp_p = entry_price + (rc['tp_dollar'] / amount)
-            if today_close >= tp_p:
+        # CLOSE timing TP — check at close, exit at close
+        if rc['tp_timing'] == 'CLOSE':
+            tp_threshold = 0.0
+            if rc['tp_type'] == 'DOLLAR_BASED' and rc['tp_dollar'] > 0:
+                tp_threshold = rc['tp_dollar']
+            elif rc['tp_type'] == 'PCT_BASED' and rc['tp_pct'] > 0:
+                tp_threshold = trade['entryValue'] * (rc['tp_pct'] / 100)
+            if tp_threshold > 0 and position_profit >= tp_threshold:
                 portfolio.close_trade(d, today_close,
-                                      f'TakeProfit Hit: {tp_p:.2f}', 'close')
+                                      f'TakeProfit Hit at close', 'close')
                 return True
 
-        # NEXT_BAR_OPEN timing
-        if rc['sl_timing'] == 'NEXT_BAR_OPEN' and rc['sl_dollar'] > 0:
-            if current_pnl <= -rc['sl_dollar']:
+        # NEXT_BAR_OPEN timing — check at close, schedule exit for next open
+        if rc['sl_timing'] == 'NEXT_BAR_OPEN':
+            sl_threshold = 0.0
+            if rc['sl_type'] == 'DOLLAR_BASED' and rc['sl_dollar'] > 0:
+                sl_threshold = rc['sl_dollar']
+            if sl_threshold > 0 and position_profit <= -sl_threshold:
                 portfolio.pending_exit = 'StopLoss Hit – next bar open'
                 return False
 
-        if rc['tp_timing'] == 'NEXT_BAR_OPEN' and rc['tp_dollar'] > 0:
-            if current_pnl >= rc['tp_dollar']:
+        if rc['tp_timing'] == 'NEXT_BAR_OPEN':
+            tp_threshold = 0.0
+            if rc['tp_type'] == 'DOLLAR_BASED' and rc['tp_dollar'] > 0:
+                tp_threshold = rc['tp_dollar']
+            if tp_threshold > 0 and position_profit >= tp_threshold:
                 portfolio.pending_exit = 'TakeProfit Hit – next bar open'
                 return False
 

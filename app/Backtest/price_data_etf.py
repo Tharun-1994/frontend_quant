@@ -143,15 +143,24 @@ class ETFPriceData:
             )
 
     def _load_dates(self):
-        # all_dates
+        # all_dates — MUST be unique calendar days (parquet may have per-minute rows)
         path = os.path.join(self.base_path, 'all_dates.parquet')
         df = pd.read_parquet(path)
         col = df.iloc[:, 0]
         if not pd.api.types.is_datetime64_any_dtype(col):
             col = pd.to_datetime(col)
-        self.all_dates = [d.date() if hasattr(d, 'date') else d for d in col]
 
-        # trading_dates
+        # Deduplicate while preserving chronological order
+        seen = set()
+        unique = []
+        for d in col:
+            day = d.date() if hasattr(d, 'date') else d
+            if day not in seen:
+                seen.add(day)
+                unique.append(day)
+        self.all_dates = unique
+
+        # trading_dates (set = already unique)
         path = os.path.join(self.base_path, 'trading_dates.parquet')
         df = pd.read_parquet(path)
         col = df.iloc[:, 0]
