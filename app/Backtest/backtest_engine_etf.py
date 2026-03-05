@@ -46,6 +46,11 @@ class ETFBacktestEngine:
         # --- Load data -----------------------------------------------
         t0 = time.perf_counter()
         print(f'[ETFBacktest] Loading parquets from {base_input_path} …')
+
+        # Only load minute data if ANY regime has is_look_inside_bar enabled
+        need_minute = any(
+            bool(getattr(r, 'is_look_inside_bar', False)) for r in regimes
+        )
         price_data = ETFPriceData(base_path=base_input_path, ticker=ticker)
         price_data.load()
         print(f'[ETFBacktest] Loaded in {time.perf_counter() - t0:.2f}s | '
@@ -57,6 +62,7 @@ class ETFBacktestEngine:
         for r in regimes:
             regime_cache.append({
                 'regime': r,
+                'is_look_inside_bar': bool(getattr(r, 'is_look_inside_bar', False)),
                 'sl_timing': (r.stoploss_timing or '').upper(),
                 'tp_timing': (r.takeprofit_timing or '').upper(),
                 'sl_type': (r.stoploss_type or '').upper(),
@@ -90,6 +96,13 @@ class ETFBacktestEngine:
         active_regime = None
         active_rc = None  # cached regime flags
 
+        # BUG FIX #1: Lock exit parameters to the ENTRY regime.
+        # TradeStation locks MaxTime, SL, and TP to the regime at entry.
+        # ENTRY1 (R1044, MT11) always exits via EXIT 1A/1B.
+        # ENTRY2 (R1045, MT24) always exits via EXIT 2A/2B.
+        entry_rc = None     # regime cache at time of entry (used for all exit logic)
+        entry_regime = None  # regime object at time of entry
+
         for d in tqdm(all_dates, desc='ETF Backtest'):
 
             if d < start_dt or d > end_dt:
@@ -109,20 +122,26 @@ class ETFBacktestEngine:
                 portfolio.close_trade(d, today_open,
                                       portfolio.pending_exit, 'open')
                 has_pos = False
+                entry_rc = None
+                entry_regime = None
 
-            # 2. Intraday SL/TP scan (numpy-based)
-            if has_pos and active_rc is not None:
+            # 2. Intraday SL/TP scan (numpy-based) — only when Look Inside Bar is enabled
+            if has_pos and entry_rc is not None and entry_rc['is_look_inside_bar']:
                 closed = self._intraday_sl_tp_fast(
-                    d, get_minute, portfolio, active_rc)
+                    d, get_minute, portfolio, entry_rc)
                 if closed:
                     has_pos = False
+                    entry_rc = None
+                    entry_regime = None
 
-            # 3. Close-of-day SL/TP
-            if has_pos and active_rc is not None:
+            # 3. Close-of-day SL/TP — uses ENTRY regime params
+            if has_pos and entry_rc is not None:
                 closed = self._check_close_sl_tp_fast(
-                    d, today_close, portfolio, active_rc)
+                    d, today_close, portfolio, entry_rc)
                 if closed:
                     has_pos = False
+                    entry_rc = None
+                    entry_regime = None
 
             # ============ END OF DAY ==================================
 
@@ -138,9 +157,9 @@ class ETFBacktestEngine:
                 portfolio.update_trade_day_count()
                 portfolio.bars_since_entry += 1
 
-            # 6a. Max-time check
-            if has_pos and active_rc is not None:
-                max_t = active_rc['max_time']
+            # 6a. Max-time check – uses ENTRY regime's max_time
+            if has_pos and entry_rc is not None:
+                max_t = entry_rc['max_time']
                 if max_t > 0:
                     if portfolio.trade_logger[portfolio.live_trade]['dayCount'] >= max_t:
                         portfolio.pending_exit = f'MaxTime {max_t}'
@@ -173,6 +192,10 @@ class ETFBacktestEngine:
                         direction=system_type,
                         capital=active_regime.capital or capital,
                     )
+
+                    # BUG FIX #1: Lock exit parameters to entry regime
+                    entry_rc = active_rc
+                    entry_regime = active_regime
 
         # ============ BACKTEST END ====================================
         last_close = get_close(end_dt)
@@ -291,7 +314,7 @@ class ETFBacktestEngine:
         return False
 
     # ------------------------------------------------------------------
-    #  Close-of-day SL/TP (CLOSE and NEXT_BAR_OPEN timing modes)
+    #  Close-of-day SL/TP (CLOSE, NEXT_BAR_OPEN, and INTRADAY fallback)
     # ------------------------------------------------------------------
     @staticmethod
     def _check_close_sl_tp_fast(d, today_close, portfolio, rc) -> bool:
@@ -301,8 +324,18 @@ class ETFBacktestEngine:
         amount = trade['quantity']
         position_profit = (today_close - entry_price) * amount
 
+        # When is_look_inside_bar is OFF, INTRADAY falls back to CLOSE
+        is_lib = rc.get('is_look_inside_bar', True)
+        sl_timing = rc['sl_timing']
+        tp_timing = rc['tp_timing']
+
+        if not is_lib and sl_timing == 'INTRADAY':
+            sl_timing = 'CLOSE'
+        if not is_lib and tp_timing == 'INTRADAY':
+            tp_timing = 'CLOSE'
+
         # CLOSE timing SL — check at close, exit at close
-        if rc['sl_timing'] == 'CLOSE':
+        if sl_timing == 'CLOSE':
             sl_threshold = 0.0
             if rc['sl_type'] == 'DOLLAR_BASED' and rc['sl_dollar'] > 0:
                 sl_threshold = rc['sl_dollar']
@@ -314,7 +347,7 @@ class ETFBacktestEngine:
                 return True
 
         # CLOSE timing TP — check at close, exit at close
-        if rc['tp_timing'] == 'CLOSE':
+        if tp_timing == 'CLOSE':
             tp_threshold = 0.0
             if rc['tp_type'] == 'DOLLAR_BASED' and rc['tp_dollar'] > 0:
                 tp_threshold = rc['tp_dollar']
@@ -326,7 +359,7 @@ class ETFBacktestEngine:
                 return True
 
         # NEXT_BAR_OPEN timing — check at close, schedule exit for next open
-        if rc['sl_timing'] == 'NEXT_BAR_OPEN':
+        if sl_timing == 'NEXT_BAR_OPEN':
             sl_threshold = 0.0
             if rc['sl_type'] == 'DOLLAR_BASED' and rc['sl_dollar'] > 0:
                 sl_threshold = rc['sl_dollar']
@@ -334,7 +367,7 @@ class ETFBacktestEngine:
                 portfolio.pending_exit = 'StopLoss Hit – next bar open'
                 return False
 
-        if rc['tp_timing'] == 'NEXT_BAR_OPEN':
+        if tp_timing == 'NEXT_BAR_OPEN':
             tp_threshold = 0.0
             if rc['tp_type'] == 'DOLLAR_BASED' and rc['tp_dollar'] > 0:
                 tp_threshold = rc['tp_dollar']

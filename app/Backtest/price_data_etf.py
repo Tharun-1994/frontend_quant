@@ -37,11 +37,26 @@ class ETFPriceData:
     # ------------------------------------------------------------------
     #  PUBLIC
     # ------------------------------------------------------------------
-    def load(self):
-        """Load all parquets and build fast lookup structures."""
-        minute_data = self._load_minute_data()
-        self._aggregate_daily(minute_data)
-        self._build_minute_arrays(minute_data)
+    def load(self, load_minute: bool = True):
+        """Load all parquets and build fast lookup structures.
+
+        Daily OHLC always comes from DAILY_{ticker}.parquet (matches
+        TradeStation's daily bar prices for entry/exit).
+
+        When load_minute=True, MINUTE_{ticker}.parquet is additionally
+        loaded to provide intrabar arrays for SL/TP scanning.
+
+        Indicators are loaded from their own parquet files (already
+        computed from the correct source by GeneratePricesIndicators).
+        """
+        # 1. Daily OHLC — always from the DAILY file (entry/exit prices)
+        self._load_daily_only()
+
+        # 2. Minute arrays — for intrabar SL/TP scanning
+        if load_minute:
+            self._load_minute_arrays()
+
+        # 3. Dates and indicators
         self._load_dates()
         self._load_indicators()
 
@@ -73,8 +88,58 @@ class ETFPriceData:
     # ------------------------------------------------------------------
     #  PRIVATE – loading
     # ------------------------------------------------------------------
-    def _load_minute_data(self) -> pd.DataFrame:
+    def _load_daily_only(self):
+        """Load DAILY_{ticker}.parquet directly into daily dicts.
+        These are the authoritative entry/exit prices."""
         path = os.path.join(self.base_path, f'DAILY_{self.ticker}.parquet')
+        if not os.path.exists(path):
+            raise FileNotFoundError(f'{path} not found')
+
+        df = pd.read_parquet(path)
+        if not isinstance(df.index, pd.DatetimeIndex):
+            if 'Date' in df.columns:
+                df.set_index(pd.to_datetime(df['Date']), inplace=True)
+                df.drop(['Date'], axis=1, errors='ignore', inplace=True)
+
+        col_map = {}
+        for c in df.columns:
+            cl = c.lower()
+            if 'open' in cl:   col_map[c] = 'Open'
+            elif 'high' in cl: col_map[c] = 'High'
+            elif 'low' in cl:  col_map[c] = 'Low'
+            elif 'close' in cl:col_map[c] = 'Close'
+        df.rename(columns=col_map, inplace=True)
+
+        for ts, row in df.iterrows():
+            d = ts.date()
+            self._daily_open[d] = float(row['Open'])
+            self._daily_high[d] = float(row['High'])
+            self._daily_low[d] = float(row['Low'])
+            self._daily_close[d] = float(row['Close'])
+
+        print(f'[ETFPriceData] Loaded {len(self._daily_open)} daily bars from DAILY_{self.ticker}.parquet')
+
+    def _load_minute_arrays(self):
+        """Load MINUTE_{ticker}.parquet and build intrabar numpy arrays only.
+        Does NOT overwrite daily OHLC — those come from _load_daily_only()."""
+        minute_data = self._load_minute_data()
+        self._build_minute_arrays(minute_data)
+        print(f'[ETFPriceData] Loaded {len(self._minute_arrays)} days of minute bars from MINUTE_{self.ticker}.parquet')
+
+    def _load_minute_data(self) -> pd.DataFrame:
+        """Load MINUTE_{ticker}.parquet for intrabar scanning.
+        Falls back to DAILY_{ticker}.parquet if minute file unavailable."""
+        minute_path = os.path.join(self.base_path, f'MINUTE_{self.ticker}.parquet')
+        daily_path = os.path.join(self.base_path, f'DAILY_{self.ticker}.parquet')
+
+        if os.path.exists(minute_path):
+            path = minute_path
+        elif os.path.exists(daily_path):
+            print(f'[ETFPriceData] WARNING: MINUTE_{self.ticker}.parquet not found, falling back to DAILY')
+            path = daily_path
+        else:
+            raise FileNotFoundError(f'Neither {minute_path} nor {daily_path} found')
+
         df = pd.read_parquet(path)
 
         # Ensure DateTimeIndex
@@ -102,21 +167,10 @@ class ETFPriceData:
 
         return df.sort_index()
 
-    def _aggregate_daily(self, minute_data: pd.DataFrame):
-        """Resample to daily OHLC and store as dicts."""
-        daily = minute_data.resample('D').agg({
-            'Open': 'first',
-            'High': 'max',
-            'Low': 'min',
-            'Close': 'last',
-        }).dropna(subset=['Open'])
-
-        for ts, row in daily.iterrows():
-            d = ts.date()
-            self._daily_open[d] = float(row['Open'])
-            self._daily_high[d] = float(row['High'])
-            self._daily_low[d] = float(row['Low'])
-            self._daily_close[d] = float(row['Close'])
+    # NOTE: _aggregate_daily removed — daily OHLC must always come from
+    # DAILY_{ticker}.parquet to match TradeStation entry/exit prices.
+    # Indicators are computed from MINUTE-aggregated data separately
+    # by GeneratePricesIndicators.
 
     def _build_minute_arrays(self, minute_data: pd.DataFrame):
         """Pre-extract numpy arrays per date using searchsorted (fastest)."""
@@ -174,6 +228,7 @@ class ETFPriceData:
         """Load each indicator parquet into a {date → float} dict."""
         skip = {
             f'DAILY_{self.ticker}.parquet',
+            f'MINUTE_{self.ticker}.parquet',
             'all_dates.parquet',
             'trading_dates.parquet',
             f'{self.ticker}_universe.parquet',

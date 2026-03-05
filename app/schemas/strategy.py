@@ -83,6 +83,7 @@ class MarketRegimeBase(BaseModel):
     exit_rules_tree: Optional[RuleTree] = None
     freeze_rules_tree: Optional[RuleTree] = None
     resume_rules_tree: Optional[RuleTree] = None
+    is_look_inside_bar: Optional[bool] = False
 
 
 

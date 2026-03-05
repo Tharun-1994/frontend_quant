@@ -69,10 +69,6 @@ class PricePath:
         return f'{path}/daily_lows.csv'
 
     @staticmethod
-    def lows(path):
-        return f'{path}/daily_lows.csv'
-
-    @staticmethod
     def volumes(path):
         return f'{path}/daily_volumes.csv'
 
@@ -81,21 +77,24 @@ class PricePath:
         return f'{path}/daily_unadjusted.csv'
 
     @staticmethod
-    def volumes(path):
-        return f'{path}/daily_volumes.csv'
-
-    @staticmethod
     def turnovers(path):
         return f'{path}/daily_turnovers.csv'
-
-
 
     @staticmethod
     def spy_closes(path):
         return f'{path}/daily_closes_spy.csv'
 
-
     @staticmethod
     def spy_prices(path):
+        """Legacy: original single SPY file."""
         return f'{path}/SPY.txt'
 
+    @staticmethod
+    def spy_daily_prices(path):
+        """SPY daily OHLC (one row per day)."""
+        return f'{path}/SPY_1M/SPY_1D.txt'
+
+    @staticmethod
+    def spy_minute_prices(path):
+        """SPY minute OHLC (one row per minute bar)."""
+        return f'{path}/SPY_1M/SPY_1M.txt'

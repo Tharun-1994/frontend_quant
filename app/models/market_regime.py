@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Date, DECIMAL, DateTime, Text, Numeric, Float, ForeignKey
+from sqlalchemy import Column, Integer, String, Date, DECIMAL, DateTime, Text, Numeric, Float, ForeignKey, Boolean
 from sqlalchemy.orm import relationship, declarative_base
 
 from sqlalchemy.sql import func
@@ -70,6 +70,8 @@ class MarketRegime(Base):
 
     freeze_rules_tree_json = Column(Text, nullable=True)
     resume_rules_tree_json = Column(Text, nullable=True)
+
+    is_look_inside_bar = Column(Boolean, default=False)
 
     # # RELATIONSHIP
     strategy = relationship("StrategyBucket", back_populates="regimes")
