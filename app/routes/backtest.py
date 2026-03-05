@@ -220,6 +220,7 @@ def db_to_pydantic(db_obj: MarketRegime) -> MarketRegimeBase:
         volatility_rules_tree=loads_tree(db_obj.volatility_rules_tree_json),
         freeze_rules_tree=loads_tree(db_obj.freeze_rules_tree_json),
         resume_rules_tree=loads_tree(db_obj.resume_rules_tree_json),
+        is_look_inside_bar=db_obj.is_look_inside_bar,
     )
     return m
 
@@ -328,7 +329,7 @@ def save_marketRegime(marketregime: MarketRegimeBase, db: Session = Depends(get_
         db_obj.takeprofit_timing = marketregime.takeprofit_timing
         db_obj.atr_lookback_stp = marketregime.atr_lookback_stp
         db_obj.atr_lookback_tp = marketregime.atr_lookback_tp
-
+        db_obj.is_look_inside_bar = marketregime.is_look_inside_bar
         db_obj.ranking = marketregime.ranking
         db_obj.ranking_lookback = marketregime.ranking_lookback
         db_obj.ranking_order = marketregime.ranking_order
@@ -383,7 +384,7 @@ def save_marketRegime(marketregime: MarketRegimeBase, db: Session = Depends(get_
             takeprofit_timing=marketregime.takeprofit_timing,
             atr_lookback_stp=marketregime.atr_lookback_stp,
             atr_lookback_tp=marketregime.atr_lookback_tp,
-
+            is_look_inside_bar=marketregime.is_look_inside_bar,
             ranking=marketregime.ranking,
             ranking_lookback=marketregime.ranking_lookback,
             ranking_order=marketregime.ranking_order,
@@ -498,6 +499,7 @@ def save_marketRegime_v2(marketregime: MarketRegimeBase, db: Session = Depends(g
 
     db_obj.freeze_rules_tree_json = dumps_tree(marketregime.freeze_rules_tree)
     db_obj.resume_rules_tree_json = dumps_tree(marketregime.resume_rules_tree)
+    db_obj.is_look_inside_bar = marketregime.is_look_inside_bar
 
     db.commit()
     db.refresh(db_obj)
@@ -941,6 +943,76 @@ def save_marketRegime_v2(marketregime: MarketRegimeBase, db: Session = Depends(g
 
 BASE_OUTPUT_DIR = r"C:\Tharun\Projects\backtest_data"
 
+@router.get("/api/{strategy_id}/input-files")
+def list_input_files(
+    strategy_id: int,
+    system_name: str = Query(...),
+    db: Session = Depends(get_db),
+):
+    """List all parquet files in the strategy's input/spy directory."""
+    input_dir = f"{BASE_OUTPUT_DIR}/{system_name}/input/spy"
+
+    if not os.path.exists(input_dir):
+        raise HTTPException(status_code=404, detail=f"Input directory not found: {input_dir}")
+
+    files = []
+    for fname in sorted(os.listdir(input_dir)):
+        if fname.endswith('.parquet'):
+            fpath = os.path.join(input_dir, fname)
+            size_bytes = os.path.getsize(fpath)
+            name = fname.replace('.parquet', '')
+
+            if name.startswith('DAILY_') or name.startswith('MINUTE_'):
+                category = 'prices'
+            elif name in ('all_dates', 'trading_dates'):
+                category = 'dates'
+            elif '_universe' in name:
+                category = 'universe'
+            else:
+                category = 'indicator'
+
+            files.append({
+                'filename': fname,
+                'name': name,
+                'category': category,
+                'size_kb': round(size_bytes / 1024, 1),
+            })
+
+    return files
+
+
+@router.get("/api/{strategy_id}/download-input/{filename}")
+def download_input_file(
+    strategy_id: int,
+    filename: str,
+    system_name: str = Query(...),
+    db: Session = Depends(get_db),
+):
+    """Download a single input parquet file converted to CSV."""
+    if '/' in filename or '\\' in filename or '..' in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    input_dir = f"{BASE_OUTPUT_DIR}/{system_name}/input/spy"
+    file_path = os.path.join(input_dir, filename)
+
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail=f"File not found: {filename}")
+
+    try:
+        df = pd.read_parquet(file_path)
+
+        buffer = io.StringIO()
+        df.to_csv(buffer, index=True)
+        buffer.seek(0)
+
+        csv_name = filename.replace('.parquet', '.csv')
+        return StreamingResponse(
+            iter([buffer.getvalue()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{system_name}_{csv_name}"'},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/api/{strategy_id}/download/{file_type}")
 def download_csv(

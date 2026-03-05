@@ -60,12 +60,14 @@ class GeneratePricesIndicators:
             '15T' = 15 minutes, etc.
         """
         resampled_df = price_data.resample(timeframe).agg({
-            'Open': 'first',
-            'High': 'max',
-            'Low': 'min',
-            'Close': 'last',
-            'Up': 'sum',
-            'Down': 'sum'
+            col: agg for col, agg in {
+                'Open': 'first',
+                'High': 'max',
+                'Low': 'min',
+                'Close': 'last',
+                'Up': 'sum',
+                'Down': 'sum',
+            }.items() if col in price_data.columns
         }).dropna(subset=['Open'])  # Remove empty periods
 
         return resampled_df
@@ -100,10 +102,18 @@ class GeneratePricesIndicators:
 
     @staticmethod
     def _get_resampled_spy(price_data, rebalance):
-        """Return DAILY_spy resampled to the strategy's rebalance frequency."""
+        """Return SPY data resampled to the strategy's rebalance frequency.
+
+        Uses MINUTE_spy (minute bars) as the source when available, since
+        indicators must be computed from minute-aggregated daily data to
+        match TradeStation. Falls back to DAILY_spy if minute data is
+        unavailable.
+        """
         rebalance_timeframe = timeframe_map.get(rebalance, 'D')
+        # Prefer minute data so aggregated OHLC matches TradeStation
+        source = price_data.get('MINUTE_spy', price_data.get('DAILY_spy'))
         return GeneratePricesIndicators.resample_to_timeframe(
-            price_data['DAILY_spy'], timeframe=rebalance_timeframe)
+            source, timeframe=rebalance_timeframe)
 
     @staticmethod
     def _compute_market_trend_rules(rules, marketRegime, price_data, rebalance, univ, indicator_set):
@@ -132,7 +142,8 @@ class GeneratePricesIndicators:
                     continue
 
                 if univ.lower() == 'spy':
-                    daily_df = GeneratePricesIndicators._get_resampled_spy(price_data, rebalance)
+                    # daily_df = GeneratePricesIndicators._get_resampled_spy(price_data, rebalance)
+                    daily_df = price_data['DAILY_spy']
                     high_prices = daily_df[['High']].rename(columns={'High': 'spy'})
                     low_prices = daily_df[['Low']].rename(columns={'Low': 'spy'})
                     close_prices = daily_df[['Close']].rename(columns={'Close': 'spy'})
@@ -143,7 +154,7 @@ class GeneratePricesIndicators:
 
                 result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[rule.indicator],
                                                                  Highs=high_prices, Lows=low_prices,
-                                                                 Closes=close_prices, length=rule.lookback)
+                                                                 Closes=close_prices, length=rule.lookback,method= 'simple')
 
                 indicator_set.add(key)
                 price_data[key] = result
@@ -172,7 +183,9 @@ class GeneratePricesIndicators:
 
             elif rule.value_indicator == 'atr':
                 if univ.lower() == 'spy':
-                    daily_df = GeneratePricesIndicators._get_resampled_spy(price_data, rebalance)
+                    # daily_df = GeneratePricesIndicators._get_resampled_spy(price_data, rebalance)
+                    daily_df = price_data['DAILY_spy']
+
                     high_prices = daily_df[['High']].rename(columns={'High': 'spy'})
                     low_prices = daily_df[['Low']].rename(columns={'Low': 'spy'})
                     close_prices = daily_df[['Close']].rename(columns={'Close': 'spy'})
@@ -184,7 +197,7 @@ class GeneratePricesIndicators:
                 result = GeneratePricesIndicators.call_indicator(
                     FUNCTION_MAPPER[rule.value_indicator],
                     Highs=high_prices, Lows=low_prices,
-                    Closes=close_prices, length=rule.value_lookback)
+                    Closes=close_prices, length=rule.value_lookback,method= 'simple')
 
             else:
                 continue
@@ -269,9 +282,7 @@ class GeneratePricesIndicators:
                     continue
 
                 if univ.lower() == 'spy':
-                    rebalance_timeframe = timeframe_map.get(rebalance, 'D')
-                    daily_df = GeneratePricesIndicators.resample_to_timeframe(
-                        price_data['DAILY_spy'], timeframe=rebalance_timeframe)
+                    daily_df = GeneratePricesIndicators._get_resampled_spy(price_data, rebalance)
                     prices = daily_df[['Close']]
                 else:
                     prices = price_data[f'{rebalance}_closes']
@@ -292,9 +303,7 @@ class GeneratePricesIndicators:
                 if key in indicator_set:
                     continue
 
-                rebalance_timeframe = timeframe_map.get(rebalance, 'D')
-                daily_df = GeneratePricesIndicators.resample_to_timeframe(
-                    price_data['DAILY_spy'], timeframe=rebalance_timeframe)
+                daily_df = GeneratePricesIndicators._get_resampled_spy(price_data, rebalance)
 
                 close_prices = daily_df[['Close']].rename(columns={'Close': 'spy'})
                 high_prices = daily_df[['High']].rename(columns={'High': 'spy'})

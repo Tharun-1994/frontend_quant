@@ -12,55 +12,84 @@ class PriceDataLoader:
     def __init__(self, base_path):
         self.base_path = base_path
 
-    def load_all(self,rebalance='',universe=''):
+    def load_all(self, rebalance='', universe=''):
         universe = universe.lower()
-        if universe != 'spy'.lower():
-
-
+        if universe != 'spy':
             return {
-                f'{rebalance}_closes': pd.read_csv(PricePath.close(self.base_path),index_col=['Date'],parse_dates=True),
-                f'{rebalance}_opens': pd.read_csv(PricePath.opens(self.base_path),index_col=['Date'],parse_dates=True),
-                f'{rebalance}_highs': pd.read_csv(PricePath.highs(self.base_path),index_col=['Date'],parse_dates=True),
-                f'{rebalance}_lows': pd.read_csv(PricePath.lows(self.base_path),index_col=['Date'],parse_dates=True),
-                f'{universe}_universe': pd.read_csv(PricePath.universe(f'{self.base_path}/{universe}'),index_col=['Date'],parse_dates=True),
-                f'{rebalance}_unadjusted_closes': pd.read_csv(PricePath.unadjustedCloses(self.base_path),index_col=['Date'],parse_dates=True),
-                f'{rebalance}_volumes': pd.read_csv(PricePath.volumes(self.base_path),index_col=['Date'],parse_dates=True),
-                f'{rebalance}_turnovers': pd.read_csv(PricePath.turnovers(self.base_path),index_col=['Date'],parse_dates=True),
+                f'{rebalance}_closes': pd.read_csv(PricePath.close(self.base_path), index_col=['Date'], parse_dates=True),
+                f'{rebalance}_opens': pd.read_csv(PricePath.opens(self.base_path), index_col=['Date'], parse_dates=True),
+                f'{rebalance}_highs': pd.read_csv(PricePath.highs(self.base_path), index_col=['Date'], parse_dates=True),
+                f'{rebalance}_lows': pd.read_csv(PricePath.lows(self.base_path), index_col=['Date'], parse_dates=True),
+                f'{universe}_universe': pd.read_csv(PricePath.universe(f'{self.base_path}/{universe}'), index_col=['Date'], parse_dates=True),
+                f'{rebalance}_unadjusted_closes': pd.read_csv(PricePath.unadjustedCloses(self.base_path), index_col=['Date'], parse_dates=True),
+                f'{rebalance}_volumes': pd.read_csv(PricePath.volumes(self.base_path), index_col=['Date'], parse_dates=True),
+                f'{rebalance}_turnovers': pd.read_csv(PricePath.turnovers(self.base_path), index_col=['Date'], parse_dates=True),
             }
         else:
-
             spy_dict = {}
-            spy_dict[f'{rebalance}_spy'] = pd.read_csv(PricePath.spy_prices(self.base_path),index_col=['Date'],parse_dates=True)
 
-            spy_dict[f'{universe}_universe'] = pd.DataFrame(index=spy_dict[f'{rebalance}_spy'].index,data={'universe': 'SPY'})
+            # ── Daily OHLC (one row per day) ──────────────────────────
+            daily_df = self._load_spy_daily(PricePath.spy_daily_prices(self.base_path))
+            spy_dict[f'DAILY_{universe}'] = daily_df
+
+            # ── Minute OHLC (one row per minute bar) ──────────────────
+            minute_df = self._load_spy_minute(PricePath.spy_minute_prices(self.base_path))
+            spy_dict[f'MINUTE_{universe}'] = minute_df
+
+            # ── Universe placeholder ──────────────────────────────────
+            spy_dict[f'{universe}_universe'] = pd.DataFrame(
+                index=daily_df.index, data={'universe': 'SPY'})
 
             return spy_dict
 
+    # ------------------------------------------------------------------
+    #  SPY file loaders
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _load_spy_daily(path: str) -> pd.DataFrame:
+        """
+        Load SPY daily file.
+        Format: Date,Time,Open,High,Low,Close,Vol,OI
+        Example: 01/03/2000,21:00,148.25,148.25,143.88,145.44,8164300,0
 
-    def load_spy_close(self,rebalance=''):
+        Returns DataFrame with DateTimeIndex and OHLC columns.
+        """
+        df = pd.read_csv(path, index_col=['Date'], parse_dates=True)
+        df.drop(['Time'], axis=1, errors='ignore', inplace=True)
+        return df.sort_index()
+
+    @staticmethod
+    def _load_spy_minute(path: str) -> pd.DataFrame:
+        """
+        Load SPY minute file.
+        Format: Date,Time,Open,High,Low,Close,Up,Down
+        Example: 01/03/2000,09:32,148.25,148.25,148.25,148.25,177300,0
+
+        Returns DataFrame with DateTimeIndex (date+time) and OHLC columns.
+        Parquet will preserve the DateTimeIndex so ETFPriceData needs no parsing.
+        """
+        df = pd.read_csv(path, parse_dates=[['Date', 'Time']], index_col=0)
+        df.index.name = 'Date'
+        return df.sort_index()
+
+    # ------------------------------------------------------------------
+    #  Existing methods (unchanged)
+    # ------------------------------------------------------------------
+    def load_spy_close(self, rebalance=''):
         return {
             f'{rebalance}_closes_spy': pd.read_csv(PricePath.spy_closes(PricePath.index_path),
                                                           index_col=['Date'], parse_dates=True)
         }
 
-    def uploadCommonPath(self,price_data={}, universe="",strategy_name = ""):
-
-
-
+    def uploadCommonPath(self, price_data={}, universe="", strategy_name=""):
         for k in price_data.keys():
-
-            if 'universe' not in k and 'trading_dates' not in k and 'all_dates' not in k :
-                # print(k)
+            if 'universe' not in k and 'trading_dates' not in k and 'all_dates' not in k:
                 if universe.lower() != 'spy':
                     price_data[k] = price_data[k].astype("float32")
-            price_data[k].to_parquet(f'{PricePath.getBacktestInputPath(universe=universe,strategy_name=strategy_name)}/{k}.parquet')
-            # price_data[k].to_csv(f'{PricePath.getBacktestInputPath(universe=universe)}/{k}.csv')
-
-
-
+            price_data[k].to_parquet(f'{PricePath.getBacktestInputPath(universe=universe, strategy_name=strategy_name)}/{k}.parquet')
 
     def get_trading_dates(self, start_trading=None, end_trading=None,
-                          use_data=True,daily_closes=pd.Series(),all_dates=[],max_lookback = 255,rebalance='daily'):
+                          use_data=True, daily_closes=pd.Series(), all_dates=[], max_lookback=255, rebalance='daily'):
         """
             Generates a date array containing the dates you wish to trade on. Considers
             the NYSE trading calendar.
@@ -153,15 +182,8 @@ class PriceDataLoader:
         if trade_date_list[-1] > daily_closes.index[-1]:
             trade_date_list = trade_date_list[:-1]
 
-
         return trade_date_list
 
-
-
-    # def crsi_exploration(self):
-    #     print("CRSI")
-        # CRSI = CRSI(prices=pricedata.daily_closes, RSI_length=strategy_params["crsi_length"], UpDown_length=2,
-        #             ROC_length=100)
     @classmethod
     def create_strategy_Folder(cls, name):
 
@@ -174,4 +196,3 @@ class PriceDataLoader:
         strategy_dir.mkdir(parents=True, exist_ok=True)
         (strategy_dir / "input").mkdir(exist_ok=True)
         (strategy_dir / "output").mkdir(exist_ok=True)
-
