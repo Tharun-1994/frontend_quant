@@ -9,8 +9,10 @@ from app.constants.static_config import UNIVERSES_Codes
 
 
 class PriceDataLoader:
+    offset = 0
     def __init__(self, base_path):
         self.base_path = base_path
+        self.offset = 0
 
     def load_all(self, rebalance='', universe=''):
         universe = universe.lower()

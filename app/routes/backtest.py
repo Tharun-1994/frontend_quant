@@ -950,8 +950,9 @@ def list_input_files(
     db: Session = Depends(get_db),
 ):
     """List all parquet files in the strategy's input/spy directory."""
-    input_dir = f"{BASE_OUTPUT_DIR}/{system_name}/input/spy"
 
+    strategy = db.query(StrategyBucket).filter(StrategyBucket.id == strategy_id).first()
+    input_dir = f"{BASE_OUTPUT_DIR}/{system_name}/input/{strategy.regimes[0].universe}"
     if not os.path.exists(input_dir):
         raise HTTPException(status_code=404, detail=f"Input directory not found: {input_dir}")
 
