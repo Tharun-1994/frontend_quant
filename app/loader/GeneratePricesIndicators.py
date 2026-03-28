@@ -37,11 +37,23 @@ class GeneratePricesIndicators:
                     value_lookback=int(r.get("value_lookback") or 0),
                     value_range_percent=int(r.get("value_range_percent") or 0),
                     params=r.get("params") or None,
+                    regime_ticker=r.get("regime_ticker") or "",
                 )
             return
 
         for c in node.get("children") or []:
             yield from GeneratePricesIndicators.iter_rules_from_tree(c)
+
+    @staticmethod
+    def _extract_tickers_from_tree(tree) -> set:
+        """Extract unique regime_ticker values from a rule tree."""
+        tickers = set()
+        if not tree:
+            return tickers
+        for rule in GeneratePricesIndicators.iter_rules_from_tree(tree):
+            if rule.regime_ticker:
+                tickers.add(rule.regime_ticker.lower())
+        return tickers
 
     @staticmethod
     def resample_to_timeframe(price_data, timeframe='D'):
@@ -119,8 +131,11 @@ class GeneratePricesIndicators:
     def _compute_market_trend_rules(rules, marketRegime, price_data, rebalance, univ, indicator_set):
         """Compute primary indicators for market trend rules."""
         for rule in rules or []:
+            # Each rule carries its own ticker (e.g. "SPY", "VIX")
+            ticker = (rule.regime_ticker or marketRegime.regime_ticker or "").lower()
+
             if rule.indicator == 'sma':
-                key = f'{marketRegime.regime_ticker.lower()}_{rule.indicator}_{rule.lookback}'
+                key = f'{ticker}_{rule.indicator}_{rule.lookback}'
                 if key in indicator_set:
                     continue
 
@@ -128,7 +143,7 @@ class GeneratePricesIndicators:
                     daily_df = GeneratePricesIndicators._get_resampled_spy(price_data, rebalance)
                     prices = daily_df[['Close']]
                 else:
-                    prices = price_data[f'{rebalance}_closes_{marketRegime.regime_ticker.lower()}']
+                    prices = price_data[f'{rebalance}_closes_{ticker}']
 
                 result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[rule.indicator],
                                                                  prices=prices, lookback=rule.lookback)
@@ -142,8 +157,7 @@ class GeneratePricesIndicators:
                     continue
 
                 if univ.lower() == 'spy':
-                    # daily_df = GeneratePricesIndicators._get_resampled_spy(price_data, rebalance)
-                    daily_df = price_data['DAILY_spy']
+                    daily_df = GeneratePricesIndicators._get_resampled_spy(price_data, rebalance)
                     high_prices = daily_df[['High']].rename(columns={'High': 'spy'})
                     low_prices = daily_df[['Low']].rename(columns={'Low': 'spy'})
                     close_prices = daily_df[['Close']].rename(columns={'Close': 'spy'})
@@ -154,10 +168,20 @@ class GeneratePricesIndicators:
 
                 result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[rule.indicator],
                                                                  Highs=high_prices, Lows=low_prices,
-                                                                 Closes=close_prices, length=rule.lookback,method= 'simple')
+                                                                 Closes=close_prices, length=rule.lookback)
 
                 indicator_set.add(key)
                 price_data[key] = result
+
+            elif rule.indicator == 'close':
+                key = f'{rule.regime_ticker.lower()}_{rule.indicator}_{rule.lookback}'
+                if key in indicator_set:
+                    continue
+                prices = price_data[f'{rebalance}_closes_{ticker}']
+                # result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[rule.indicator],
+                #                                                  prices=prices, lookback=rule.lookback)
+                indicator_set.add(key)
+                price_data[key] = prices
 
     @staticmethod
     def _compute_market_trend_value_indicators(rules, price_data, rebalance, univ, indicator_set):
@@ -166,7 +190,10 @@ class GeneratePricesIndicators:
             if not rule.value_indicator:
                 continue
 
-            key = f'{rule.value_indicator}_{rule.value_lookback}'
+            # Use per-rule ticker for market trend value indicators
+            ticker = (rule.regime_ticker or "").lower()
+
+            key = f'{rule.regime_ticker.lower()}_{rule.value_indicator}_{rule.value_lookback}'
             if key in indicator_set:
                 continue
 
@@ -174,6 +201,8 @@ class GeneratePricesIndicators:
                 if univ.lower() == 'spy':
                     daily_df = GeneratePricesIndicators._get_resampled_spy(price_data, rebalance)
                     prices = daily_df[['Close']]
+                elif ticker:
+                    prices = price_data[f'{rebalance}_closes_{ticker}']
                 else:
                     prices = price_data[f'{rebalance}_closes']
 
@@ -181,11 +210,10 @@ class GeneratePricesIndicators:
                     FUNCTION_MAPPER[rule.value_indicator],
                     prices=prices, lookback=rule.value_lookback)
 
+
             elif rule.value_indicator == 'atr':
                 if univ.lower() == 'spy':
-                    # daily_df = GeneratePricesIndicators._get_resampled_spy(price_data, rebalance)
-                    daily_df = price_data['DAILY_spy']
-
+                    daily_df = GeneratePricesIndicators._get_resampled_spy(price_data, rebalance)
                     high_prices = daily_df[['High']].rename(columns={'High': 'spy'})
                     low_prices = daily_df[['Low']].rename(columns={'Low': 'spy'})
                     close_prices = daily_df[['Close']].rename(columns={'Close': 'spy'})
@@ -197,7 +225,7 @@ class GeneratePricesIndicators:
                 result = GeneratePricesIndicators.call_indicator(
                     FUNCTION_MAPPER[rule.value_indicator],
                     Highs=high_prices, Lows=low_prices,
-                    Closes=close_prices, length=rule.value_lookback,method= 'simple')
+                    Closes=close_prices, length=rule.value_lookback)
 
             else:
                 continue
@@ -262,6 +290,16 @@ class GeneratePricesIndicators:
                                                                  week_high_in_days=n_week_days,
                                                                  high_last_days=within_days)
                 key = f'{rule.indicator}_{n_week_days}_{within_days}'
+
+            elif rule.indicator == 'sharpe':
+                p = rule.params or {}
+                mom = int(p.get("momentum_lookback", 252))
+                vol = int(p.get("vol_lookback", 252))
+                skip = int(p.get("skip_days", 0))
+                result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER['sharpe'],
+                                        prices=price_data[f'{rebalance}_closes'], momentum_lookback=mom,
+                                        vol_lookback=vol, skip_days=skip)
+                key = f'{rule.indicator}_{mom}_{vol}_{skip}'
 
             else:
                 continue
@@ -372,7 +410,21 @@ class GeneratePricesIndicators:
                     df_out = date_to_active_tickers.to_frame(name="active_tickers")
                     price_data[f'{univ}_universe'] = df_out["active_tickers"].apply(lambda x: ",".join(x)).to_frame()
 
-                    price_data.update(loader.load_spy_close(rebalance=strategy.rebalance))
+                    # Load closes for each unique ticker referenced in market trend rules
+                    mt_tickers = GeneratePricesIndicators._extract_tickers_from_tree(
+                        marketRegime.market_trend_rules_tree)
+                    if not mt_tickers:
+                        mt_tickers = {'spy'}  # fallback to SPY if no tickers specified
+                    for ticker in mt_tickers:
+                        if ticker == 'spy':
+                            price_data.update(loader.load_spy_close(rebalance=strategy.rebalance))
+                        else:
+                            # Load closes for other tickers (VIX, GLD, etc.)
+                            try:
+                                price_data.update(loader.load_ticker_close(
+                                    ticker=ticker, rebalance=strategy.rebalance))
+                            except Exception as e:
+                                print(f"[WARNING] Could not load closes for ticker '{ticker}': {e}")
 
                 indictor_Set = set()
 
@@ -416,6 +468,9 @@ class GeneratePricesIndicators:
                 # Trading Days
                 GeneratePricesIndicators._compute_trading_dates(price_data, strategy.rebalance, univ, strategy, loader)
 
+                # Sector Mapping (for sector-based ranking filter)
+                if marketRegime.sector_level and marketRegime.sector_limit:
+                    price_data.update(loader.load_sector_mapping())
 
                 loader.uploadCommonPath(price_data=price_data,universe=univ,strategy_name = strategy.name)
 

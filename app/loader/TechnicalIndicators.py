@@ -777,6 +777,18 @@ class IndicatorCalculator:
 
     @staticmethod
     @register
+    def SharpeRatio(prices, momentum_lookback=252, vol_lookback=252, skip_days=0):
+        momentum = prices.shift(1).pct_change(momentum_lookback)
+        volatility = prices.shift(1).pct_change().rolling(vol_lookback).std()
+        return momentum.shift(skip_days) / volatility
+
+    @staticmethod
+    @register
+    def RollingVolatility(prices, n=252):
+        return prices.shift(1).pct_change().rolling(n).std()
+
+    @staticmethod
+    @register
     def TrueRange(Highs, Lows, Closes):
         """
         Calculates the true range values for time-series data of multiple stocks.

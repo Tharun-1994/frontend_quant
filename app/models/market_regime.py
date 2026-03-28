@@ -73,6 +73,9 @@ class MarketRegime(Base):
 
     is_look_inside_bar = Column(Boolean, default=False)
 
+    sector_level = Column(Integer, nullable=True)
+    sector_limit = Column(Integer, nullable=True)
+
     # # RELATIONSHIP
     strategy = relationship("StrategyBucket", back_populates="regimes")
 

@@ -12,7 +12,7 @@ class Rule(BaseModel):
     operator: str
     value: float
     connector: str
-    
+    regime_ticker: Optional[str] = None
     label: Optional[str] = None
     value_type :Optional[str] = None
     value_indicator :Optional[str] = None
@@ -30,7 +30,7 @@ class MarketRegimeBase(BaseModel):
     id: Optional[int] = None
     strategy_id: int
     regime_type: str
-    regime_ticker: str
+    regime_ticker: Optional[str] = ""
     market_trend_type: Optional[str] = None
     market_trend_rules: Optional[List[Rule]] = None
     volatility_rules: Optional[List[Rule]] = None
@@ -84,6 +84,8 @@ class MarketRegimeBase(BaseModel):
     freeze_rules_tree: Optional[RuleTree] = None
     resume_rules_tree: Optional[RuleTree] = None
     is_look_inside_bar: Optional[bool] = False
+    sector_level: Optional[int] = None
+    sector_limit: Optional[int] = None
 
 
 

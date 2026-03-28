@@ -83,9 +83,21 @@ class PriceDataLoader:
                                                           index_col=['Date'], parse_dates=True)
         }
 
+    def load_sector_mapping(self):
+        """Load sector/industry classification from SnP_500_INDUSTRIES.csv (tab-separated, no header)."""
+        import os
+        sector_path = os.path.join(self.base_path, 'SnP_500_INDUSTRIES.csv')
+        if not os.path.exists(sector_path):
+            print(f"[WARNING] Sector file not found: {sector_path}")
+            return {}
+        df = pd.read_csv(sector_path, sep='\t', header=None,
+                         names=['symbol', 'level_1', 'level_2', 'level_3', 'level_4', 'level_5'])
+        df.set_index('symbol', inplace=True)
+        return {'sector_mapping': df}
+
     def uploadCommonPath(self, price_data={}, universe="", strategy_name=""):
         for k in price_data.keys():
-            if 'universe' not in k and 'trading_dates' not in k and 'all_dates' not in k:
+            if 'universe' not in k and 'trading_dates' not in k and 'all_dates' not in k and 'sector_mapping' not in k:
                 if universe.lower() != 'spy':
                     price_data[k] = price_data[k].astype("float32")
             price_data[k].to_parquet(f'{PricePath.getBacktestInputPath(universe=universe, strategy_name=strategy_name)}/{k}.parquet')

@@ -221,6 +221,8 @@ def db_to_pydantic(db_obj: MarketRegime) -> MarketRegimeBase:
         freeze_rules_tree=loads_tree(db_obj.freeze_rules_tree_json),
         resume_rules_tree=loads_tree(db_obj.resume_rules_tree_json),
         is_look_inside_bar=db_obj.is_look_inside_bar,
+        sector_level=db_obj.sector_level,
+        sector_limit=db_obj.sector_limit,
     )
     return m
 
@@ -409,24 +411,14 @@ def save_marketRegime(marketregime: MarketRegimeBase, db: Session = Depends(get_
         return db_obj
 
 
-
-
 @router.post("/api/save-marketregime-v2")
 def save_marketRegime_v2(marketregime: MarketRegimeBase, db: Session = Depends(get_db)):
     # --- helper to compute legacy expression strings ---
     def expr_and_labels(rules):
-        rules_dicts = [normalize_rule(r.dict()) for r in (rules or [])]  # ✅ changed
+        rules_dicts = [normalize_rule(r.dict()) for r in (rules or [])]
         expr = build_expression(rules_dicts)
         labels = extract_labels(rules_dicts)
         return expr, labels
-
-    # mt_expr, mt_labels = expr_and_labels(marketregime.market_trend_rules)
-    # vol_expr, vol_labels = expr_and_labels(marketregime.volatility_rules)
-    # freeze_expr, freeze_labels = expr_and_labels(marketregime.freeze_rules_tree)
-    # resume_expr, resume_labels = expr_and_labels(marketregime.resume_rules_tree)
-
-    # en_expr, en_labels = expr_and_labels(marketregime.entry_rules)
-    # ex_expr, ex_labels = expr_and_labels(marketregime.exit_rules)
 
     if marketregime.id:
         db_obj = db.query(MarketRegime).filter(MarketRegime.id == marketregime.id).first()
@@ -443,15 +435,6 @@ def save_marketRegime_v2(marketregime: MarketRegimeBase, db: Session = Depends(g
 
     db_obj.market_trend_rules = None
     db_obj.market_trend_rules_labels = None
-
-    # db_obj.resume_rules_tree_json = vol_expr
-    # db_obj.volatility_rules_labels = vol_labels
-    #
-    # db_obj.entry_rules = en_expr
-    # db_obj.entry_rules_labels = en_labels
-    #
-    # db_obj.exit_rules = ex_expr
-    # db_obj.exit_rules_labels = ex_labels
 
     db_obj.entry_timing = marketregime.entry_timing
     db_obj.exit_timing = marketregime.exit_timing
@@ -485,33 +468,158 @@ def save_marketRegime_v2(marketregime: MarketRegimeBase, db: Session = Depends(g
     db_obj.banned_months = json.dumps(marketregime.banned_months or [])
 
     marketregime.market_trend_rules_tree = normalize_rules_tree(marketregime.market_trend_rules_tree)
-
     marketregime.entry_rules_tree = normalize_rules_tree(marketregime.entry_rules_tree)
     marketregime.exit_rules_tree = normalize_rules_tree(marketregime.exit_rules_tree)
-
     marketregime.freeze_rules_tree = normalize_rules_tree(marketregime.freeze_rules_tree)
     marketregime.resume_rules_tree = normalize_rules_tree(marketregime.resume_rules_tree)
 
-    # ✅ NEW: save tree JSON into new columns
     db_obj.market_trend_rules_tree_json = dumps_tree(marketregime.market_trend_rules_tree)
     db_obj.entry_rules_tree_json        = dumps_tree(marketregime.entry_rules_tree)
     db_obj.exit_rules_tree_json         = dumps_tree(marketregime.exit_rules_tree)
-
     db_obj.freeze_rules_tree_json = dumps_tree(marketregime.freeze_rules_tree)
     db_obj.resume_rules_tree_json = dumps_tree(marketregime.resume_rules_tree)
     db_obj.is_look_inside_bar = marketregime.is_look_inside_bar
+    db_obj.sector_level = marketregime.sector_level
+    db_obj.sector_limit = marketregime.sector_limit
 
+    # ── ALWAYS commit + refresh first so we have the id ──
     db.commit()
     db.refresh(db_obj)
 
-    # keep your side-effect
-    strategy = db.query(StrategyBucket).filter(StrategyBucket.id == marketregime.strategy_id).first()
+    # ── Generate indicator files (non-fatal — id is already saved) ──
+    generate_warning = None
+    try:
+        strategy = db.query(StrategyBucket).filter(StrategyBucket.id == marketregime.strategy_id).first()
+        GeneratePricesIndicators.generate(marketRegime=marketregime, strategy=strategy)
+    except Exception as e:
+        generate_warning = str(e)
+        print(f"[WARNING] Indicator generation failed for regime {db_obj.id}: {e}")
+
+    # Always return the saved object (with id) — frontend needs this to avoid duplicates
+    result = {
+        "id": db_obj.id,
+        "strategy_id": db_obj.strategy_id,
+        "regime_type": db_obj.regime_type,
+    }
+    if generate_warning:
+        result["warning"] = f"Saved but indicator generation failed: {generate_warning}"
+
+    return result
 
 
-    GeneratePricesIndicators.generate(marketRegime=marketregime, strategy=strategy)
-
-    return db_obj
-
+# @router.post("/api/save-marketregime-v2")
+# def save_marketRegime_v2(marketregime: MarketRegimeBase, db: Session = Depends(get_db)):
+#     # --- helper to compute legacy expression strings ---
+#     def expr_and_labels(rules):
+#         rules_dicts = [normalize_rule(r.dict()) for r in (rules or [])]  # ✅ changed
+#         expr = build_expression(rules_dicts)
+#         labels = extract_labels(rules_dicts)
+#         return expr, labels
+#
+#     # mt_expr, mt_labels = expr_and_labels(marketregime.market_trend_rules)
+#     # vol_expr, vol_labels = expr_and_labels(marketregime.volatility_rules)
+#     # freeze_expr, freeze_labels = expr_and_labels(marketregime.freeze_rules_tree)
+#     # resume_expr, resume_labels = expr_and_labels(marketregime.resume_rules_tree)
+#
+#     # en_expr, en_labels = expr_and_labels(marketregime.entry_rules)
+#     # ex_expr, ex_labels = expr_and_labels(marketregime.exit_rules)
+#
+#     if marketregime.id:
+#         db_obj = db.query(MarketRegime).filter(MarketRegime.id == marketregime.id).first()
+#         if not db_obj:
+#             raise HTTPException(status_code=404, detail="MarketRegime not found")
+#     else:
+#         db_obj = MarketRegime(strategy_id=marketregime.strategy_id)
+#         db.add(db_obj)
+#
+#     # --- normal fields (same as before) ---
+#     db_obj.regime_type = marketregime.regime_type
+#     db_obj.regime_ticker = marketregime.regime_ticker
+#     db_obj.market_trend_type = marketregime.market_trend_type
+#
+#     db_obj.market_trend_rules = None
+#     db_obj.market_trend_rules_labels = None
+#
+#     # db_obj.resume_rules_tree_json = vol_expr
+#     # db_obj.volatility_rules_labels = vol_labels
+#     #
+#     # db_obj.entry_rules = en_expr
+#     # db_obj.entry_rules_labels = en_labels
+#     #
+#     # db_obj.exit_rules = ex_expr
+#     # db_obj.exit_rules_labels = ex_labels
+#
+#     db_obj.entry_timing = marketregime.entry_timing
+#     db_obj.exit_timing = marketregime.exit_timing
+#
+#     db_obj.stoploss_type = marketregime.stoploss_type
+#     db_obj.takeprofit_type = marketregime.takeprofit_type
+#
+#     db_obj.takeprofit_dollar = marketregime.takeprofit_dollar
+#     db_obj.stoploss_dollar = marketregime.stoploss_dollar
+#
+#     db_obj.stoploss_pct = marketregime.stoploss_pct
+#     db_obj.takeprofit_pct = marketregime.takeprofit_pct
+#     db_obj.stoploss_timing = marketregime.stoploss_timing
+#     db_obj.takeprofit_timing = marketregime.takeprofit_timing
+#     db_obj.atr_lookback_stp = marketregime.atr_lookback_stp
+#     db_obj.atr_lookback_tp = marketregime.atr_lookback_tp
+#
+#     db_obj.ranking = marketregime.ranking
+#     db_obj.ranking_lookback = marketregime.ranking_lookback
+#     db_obj.ranking_order = marketregime.ranking_order
+#
+#     db_obj.order_type = marketregime.order_type
+#     db_obj.limit_pct = marketregime.limit_pct
+#     db_obj.atr_limit_lookback = marketregime.atr_limit_lookback
+#
+#     db_obj.universe = marketregime.universe
+#     db_obj.capital = marketregime.capital
+#     db_obj.slots = marketregime.slots
+#     db_obj.max_time = marketregime.max_time
+#
+#     db_obj.banned_months = json.dumps(marketregime.banned_months or [])
+#
+#     marketregime.market_trend_rules_tree = normalize_rules_tree(marketregime.market_trend_rules_tree)
+#
+#     marketregime.entry_rules_tree = normalize_rules_tree(marketregime.entry_rules_tree)
+#     marketregime.exit_rules_tree = normalize_rules_tree(marketregime.exit_rules_tree)
+#
+#     marketregime.freeze_rules_tree = normalize_rules_tree(marketregime.freeze_rules_tree)
+#     marketregime.resume_rules_tree = normalize_rules_tree(marketregime.resume_rules_tree)
+#
+#     # ✅ NEW: save tree JSON into new columns
+#     db_obj.market_trend_rules_tree_json = dumps_tree(marketregime.market_trend_rules_tree)
+#     db_obj.entry_rules_tree_json        = dumps_tree(marketregime.entry_rules_tree)
+#     db_obj.exit_rules_tree_json         = dumps_tree(marketregime.exit_rules_tree)
+#
+#     db_obj.freeze_rules_tree_json = dumps_tree(marketregime.freeze_rules_tree)
+#     db_obj.resume_rules_tree_json = dumps_tree(marketregime.resume_rules_tree)
+#     db_obj.is_look_inside_bar = marketregime.is_look_inside_bar
+#
+#     db.commit()
+#     db.refresh(db_obj)
+#
+#     # ── Generate indicator files (non-fatal — id is already saved) ──
+#     generate_warning = None
+#     try:
+#         strategy = db.query(StrategyBucket).filter(StrategyBucket.id == marketregime.strategy_id).first()
+#         GeneratePricesIndicators.generate(marketRegime=marketregime, strategy=strategy)
+#     except Exception as e:
+#         generate_warning = str(e)
+#         print(f"[WARNING] Indicator generation failed for regime {db_obj.id}: {e}")
+#
+#     # Always return the saved object (with id) — frontend needs this to avoid duplicates
+#     result = {
+#         "id": db_obj.id,
+#         "strategy_id": db_obj.strategy_id,
+#         "regime_type": db_obj.regime_type,
+#     }
+#     if generate_warning:
+#         result["warning"] = f"Saved but indicator generation failed: {generate_warning}"
+#
+#     return result
+#
 
 # @router.post("/api/save-strategys")
 # def save_strategys(strategy_data: StrategyRequest, db: Session = Depends(get_db)):
@@ -1071,7 +1179,11 @@ def get_equity(strategy_id: str, db: Session = Depends(get_db)):
         except Exception:
             raise HTTPException(status_code=404, detail="Equity file not found")
 
-        df["equityValue"] = df["equityValue"] - 37500
+        if 'spy' in strategy.market_regime_type.lower():
+            df["equityValue"] = df["equityValue"] - 37500
+        else:
+            df["equityValue"] = df["equityValue"] - 100000
+
         df["dailyDrawdown"] = -1 * df["dailyDrawdown"]
         df.index.name = "date"
 
