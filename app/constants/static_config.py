@@ -16,13 +16,13 @@ timeframe_map = {
 
 UNIVERSES = {
     "sp500": "S&P 500",
-    "r3000": "Russell 3000",
+    "russell3000": "Russell 3000",
     "liquid500": "Liquid 500",
     "spy" : "SPY"
 }
 UNIVERSES_Codes = {
     "S&P 500": "sp500",
-    "Russell 3000": "r3000",
+    "Russell 3000": "russell3000",
     "Liquid 500": "liquid500",
     "SPY":"spy"
 }
@@ -56,7 +56,8 @@ FUNCTION_MAPPER = {
     "relative_momentum": "ROC",
     "n_week_high_recent": "n_week_high_recent",
     "sharpe":"SharpeRatio",
-    "rolling_vol": "RollingVolatility"
+    "rolling_vol": "RollingVolatility",
+    "roc": "ROC",
 }
 
 REBALACE = {

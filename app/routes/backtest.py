@@ -1,10 +1,9 @@
 import io
 import os
 from http.client import HTTPException
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query
-from numpy.testing.print_coercion_tables import print_new_cast_table
+
 from sqlalchemy import exists, func
 
 from sqlalchemy.orm import Session
@@ -12,13 +11,11 @@ import json
 from plotly.utils import PlotlyJSONEncoder
 from starlette.responses import FileResponse, StreamingResponse
 
-from app.constants.PricePath import PricePath
-from app.constants.static_config import UNIVERSES, FUNCTION_MAPPER, UNIVERSES_Codes
 from app.database import get_db
 from app.loader.GeneratePricesIndicators import GeneratePricesIndicators
 from app.loader.PriceDataLoader import PriceDataLoader
 from app.loader.Rule_Tree_JSON import dumps_tree, loads_tree, normalize_rules_tree, normalize_rule
-from app.loader.TechnicalIndicators import INDICATOR_REGISTRY, IndicatorCalculator
+
 from app.models import MarketRegime
 from app.models.strategy_bucket import StrategyBucket
 from app.schemas import StrategyRequest
@@ -223,6 +220,11 @@ def db_to_pydantic(db_obj: MarketRegime) -> MarketRegimeBase:
         is_look_inside_bar=db_obj.is_look_inside_bar,
         sector_level=db_obj.sector_level,
         sector_limit=db_obj.sector_limit,
+        gap_filter_pct=db_obj.gap_filter_pct,
+        max_duplicates=db_obj.max_duplicates,
+        max_duplicate_sets=db_obj.max_duplicate_sets,
+        tdom_filters=json.loads(db_obj.tdom_filters_json or "[]"),
+        vol_filter=json.loads(db_obj.vol_filter_json) if db_obj.vol_filter_json else None,
     )
     return m
 
@@ -346,6 +348,8 @@ def save_marketRegime(marketregime: MarketRegimeBase, db: Session = Depends(get_
         db_obj.max_time = marketregime.max_time
 
         db_obj.banned_months = json.dumps(marketregime.banned_months or [])
+        db_obj.tdom_filters_json = json.dumps([f.dict() for f in (marketregime.tdom_filters or [])])
+        db_obj.vol_filter_json = json.dumps(marketregime.vol_filter.dict()) if marketregime.vol_filter else None
 
         db.commit()
         db.refresh(db_obj)
@@ -399,7 +403,9 @@ def save_marketRegime(marketregime: MarketRegimeBase, db: Session = Depends(get_
             capital=marketregime.capital,
             slots=marketregime.slots,
             max_time = marketregime.max_time,
-            banned_months=json.dumps(marketregime.banned_months or [])
+            banned_months=json.dumps(marketregime.banned_months or []),
+            tdom_filters_json=json.dumps([f.dict() for f in (marketregime.tdom_filters or [])]),
+            vol_filter_json=json.dumps(marketregime.vol_filter.dict()) if marketregime.vol_filter else None,
         )
         db.add(db_obj)
         db.commit()
@@ -466,6 +472,8 @@ def save_marketRegime_v2(marketregime: MarketRegimeBase, db: Session = Depends(g
     db_obj.max_time = marketregime.max_time
 
     db_obj.banned_months = json.dumps(marketregime.banned_months or [])
+    db_obj.tdom_filters_json = json.dumps([f.dict() for f in (marketregime.tdom_filters or [])])
+    db_obj.vol_filter_json = json.dumps(marketregime.vol_filter.dict()) if marketregime.vol_filter else None
 
     marketregime.market_trend_rules_tree = normalize_rules_tree(marketregime.market_trend_rules_tree)
     marketregime.entry_rules_tree = normalize_rules_tree(marketregime.entry_rules_tree)
@@ -481,6 +489,9 @@ def save_marketRegime_v2(marketregime: MarketRegimeBase, db: Session = Depends(g
     db_obj.is_look_inside_bar = marketregime.is_look_inside_bar
     db_obj.sector_level = marketregime.sector_level
     db_obj.sector_limit = marketregime.sector_limit
+    db_obj.gap_filter_pct = marketregime.gap_filter_pct
+    db_obj.max_duplicates = marketregime.max_duplicates
+    db_obj.max_duplicate_sets = marketregime.max_duplicate_sets
 
     # ── ALWAYS commit + refresh first so we have the id ──
     db.commit()

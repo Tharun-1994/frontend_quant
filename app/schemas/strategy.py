@@ -26,6 +26,32 @@ class Rule(BaseModel):
 
 RuleTree = Dict[str, Any]
 
+
+class TdomFilter(BaseModel):
+    """
+    One TDOM (Trading Day of Month) calendar filter rule.
+    Either tdom-based (blocks on a specific 0-indexed trading day position)
+    or weekday-based (blocks on a specific Python weekday: 0=Mon, 4=Fri).
+    Matches Java TdomFilterDto exactly.
+    """
+    tdom: Optional[int] = None        # 0 = 1st trading day of month, 1 = 2nd, etc.
+    weekday: Optional[int] = None     # 0 = Monday … 4 = Friday
+    banned_months: List[int] = []     # 1=Jan … 12=Dec
+
+class VolFilter(BaseModel):
+    """
+    Dynamic vol/turnover filter config.
+    When enabled=False the engine skips all vol/turnover threshold logic.
+    Matches Python crdt_strat_1 vol_threshold_pct_* / turnover_threshold_pct_* params.
+    """
+    enabled: bool = False
+    spy_ticker: str = "spy"          # parquet key: DAILY_closes_{spy_ticker}
+    vol_pct_bull: float = 0.20       # bottom 20% excluded when SPY > SMA200
+    vol_pct_bear: float = 0.45       # bottom 45% excluded when SPY <= SMA200
+    turnover_pct_bull: float = 0.35  # bottom 35% excluded when SPY > SMA200
+    turnover_pct_bear: float = 0.05  # bottom 5%  excluded when SPY <= SMA200
+
+
 class MarketRegimeBase(BaseModel):
     id: Optional[int] = None
     strategy_id: int
@@ -87,7 +113,12 @@ class MarketRegimeBase(BaseModel):
     sector_level: Optional[int] = None
     sector_limit: Optional[int] = None
 
+    gap_filter_pct: Optional[float] = None
+    max_duplicates: Optional[int] = None
+    max_duplicate_sets: Optional[int] = None
 
+    tdom_filters: Optional[List[TdomFilter]] = []  # dynamic TDOM calendar filter rules
+    vol_filter: Optional[VolFilter] = None          # dynamic vol/turnover filter
 
     def to_dict(self):
         return jsonable_encoder(self)

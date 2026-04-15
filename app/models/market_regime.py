@@ -76,6 +76,16 @@ class MarketRegime(Base):
     sector_level = Column(Integer, nullable=True)
     sector_limit = Column(Integer, nullable=True)
 
+    gap_filter_pct = Column(Numeric(5, 2), nullable=True)
+
+    max_duplicates = Column(Integer, nullable=True)
+    max_duplicate_sets = Column(Integer, nullable=True)
+
+    # Stored as JSON string e.g. '[{"tdom":0,"banned_months":[3,4,5]}]'
+    tdom_filters_json = Column(Text, nullable=True)
+
+    # Stored as JSON string e.g. '{"enabled":true,"spy_ticker":"spy","vol_pct_bull":0.2,...}'
+    vol_filter_json = Column(Text, nullable=True)
+
     # # RELATIONSHIP
     strategy = relationship("StrategyBucket", back_populates="regimes")
-

@@ -301,6 +301,17 @@ class GeneratePricesIndicators:
                                         vol_lookback=vol, skip_days=skip)
                 key = f'{rule.indicator}_{mom}_{vol}_{skip}'
 
+            elif rule.indicator == 'roc':
+                result = GeneratePricesIndicators.call_indicator(
+                    FUNCTION_MAPPER['roc'],
+                    df=price_data[f'{rebalance}_closes'],
+                    lookback=rule.lookback
+                ) * 100  # pct_change returns decimal (0.03), rules compare against percent (3)
+
+            elif rule.indicator == 'close_minus_open':
+                result = price_data[f'{rebalance}_closes'] - price_data[f'{rebalance}_opens']
+                key = 'close_minus_open_0'  # lookback is always 0
+
             else:
                 continue
 
@@ -471,6 +482,23 @@ class GeneratePricesIndicators:
                 # Sector Mapping (for sector-based ranking filter)
                 if marketRegime.sector_level and marketRegime.sector_limit:
                     price_data.update(loader.load_sector_mapping())
+
+                # Vol/Turnover filter parquets
+                # Generated when vol_filter is enabled on the regime.
+                # avg_volume   = rolling(200).mean(turnovers / unadj_closes)
+                # avg_turnover = rolling(200).mean(closes   * volumes)
+                # Matches Python crdt_strat_1.create_strategy_data().
+                if getattr(marketRegime, "vol_filter", None) and getattr(marketRegime.vol_filter, "enabled", False):
+                    _rebalance  = strategy.rebalance
+                    _turnovers  = price_data.get(f'{_rebalance}_turnovers')
+                    _unadj      = price_data.get(f'{_rebalance}_unadjusted_closes')
+                    _closes     = price_data.get(f'{_rebalance}_closes')
+                    _volumes    = price_data.get(f'{_rebalance}_volumes')
+                    if _turnovers is not None and _unadj is not None:
+                        unadj_vol = _turnovers / _unadj
+                        price_data['avg_volume'] = unadj_vol.rolling(200).mean()
+                    if _closes is not None and _volumes is not None:
+                        price_data['avg_turnover'] = (_closes * _volumes).rolling(200).mean()
 
                 loader.uploadCommonPath(price_data=price_data,universe=univ,strategy_name = strategy.name)
 
