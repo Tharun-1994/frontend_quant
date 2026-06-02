@@ -60,7 +60,7 @@ FUNCTION_MAPPER = {
     "roc": "ROC",
 }
 
-REBALACE = {
+REBALANCE = {
     "daily": "DAILY",
     "weekly":"WEEKLY",
     "monthly" : "MONTHLY"

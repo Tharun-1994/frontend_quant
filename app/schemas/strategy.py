@@ -110,6 +110,7 @@ class MarketRegimeBase(BaseModel):
     freeze_rules_tree: Optional[RuleTree] = None
     resume_rules_tree: Optional[RuleTree] = None
     is_look_inside_bar: Optional[bool] = False
+    close_positions_on_regime_exit: Optional[bool] = False
     sector_level: Optional[int] = None
     sector_limit: Optional[int] = None
 

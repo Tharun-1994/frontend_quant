@@ -778,8 +778,8 @@ class IndicatorCalculator:
     @staticmethod
     @register
     def SharpeRatio(prices, momentum_lookback=252, vol_lookback=252, skip_days=0):
-        momentum = prices.shift(1).pct_change(momentum_lookback)
-        volatility = prices.shift(1).pct_change().rolling(vol_lookback).std()
+        momentum = prices.pct_change(momentum_lookback)
+        volatility = prices.pct_change().rolling(vol_lookback).std()
         return momentum.shift(skip_days) / volatility
 
     @staticmethod

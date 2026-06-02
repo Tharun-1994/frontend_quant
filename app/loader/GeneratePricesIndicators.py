@@ -11,6 +11,8 @@ from app.schemas.strategy import Rule
 class GeneratePricesIndicators:
     @staticmethod
     def call_indicator(name: str, **kwargs):
+        if name == 'ADX' :
+            name = 'ADX_1'
         func = INDICATOR_REGISTRY.get(name)
         if not func:
             raise ValueError(f"Function {name} is not a registered indicator.")
@@ -128,6 +130,23 @@ class GeneratePricesIndicators:
             source, timeframe=rebalance_timeframe)
 
     @staticmethod
+    def _compute_volatility_cut_indicators(rules, price_data, rebalance, indicator_set):
+        """Volatility-cut (freeze/resume) indicators — SEPARATE from market-trend.
+        Handles 'vix_close': exposes the loaded VIX closes under key 'vix_close_0'
+        so the engine's VolatilityCutEvaluator can read it. The VIX closes are
+        loaded by the ticker scan (regime_ticker=VIX -> {rebalance}_closes_vix)."""
+        for rule in rules or []:
+            if rule.indicator == 'vix_close':
+                key = f'{rule.indicator}_{rule.lookback}'  # vix_close_0
+                if key in indicator_set:
+                    continue
+                ticker = (rule.regime_ticker or 'vix').lower()
+                src = price_data.get(f'{rebalance}_closes_{ticker}')
+                if src is not None:
+                    indicator_set.add(key)
+                    price_data[key] = src
+
+    @staticmethod
     def _compute_market_trend_rules(rules, marketRegime, price_data, rebalance, univ, indicator_set):
         """Compute primary indicators for market trend rules."""
         for rule in rules or []:
@@ -232,6 +251,7 @@ class GeneratePricesIndicators:
 
             indicator_set.add(key)
             price_data[key] = result
+
     @staticmethod
     def _compute_rule_indicators(rules, price_data, rebalance, univ, indicator_set):
         """Compute the primary indicator for each rule."""
@@ -311,12 +331,79 @@ class GeneratePricesIndicators:
             elif rule.indicator == 'close_minus_open':
                 result = price_data[f'{rebalance}_closes'] - price_data[f'{rebalance}_opens']
                 key = 'close_minus_open_0'  # lookback is always 0
-
+            elif rule.indicator == 'vol_bucket':
+                p = rule.params or {}
+                reset_month = int(p.get("reset_month", 2))
+                percentile = float(p.get("percentile", 7.5))
+                length = int(p.get("length", 21))
+                which = str(p.get("which", "last"))  # 'last' = original; not exposed in UI yet
+                result = GeneratePricesIndicators._vol_bucket(
+                    turnovers=price_data[f'{rebalance}_turnovers'],
+                    unadj_closes=price_data[f'{rebalance}_unadjusted_closes'],
+                    universe_active=price_data[f'{univ}_universe'],
+                    reset_month=reset_month, percentile=percentile,
+                    length=length, which=which,
+                )
+                key = 'vol_bucket_0'  # lookback always 0 (params live in the rule, not the key)
             else:
                 continue
 
             indicator_set.add(key)
             price_data[key] = result
+
+    @staticmethod
+    def _vol_bucket(turnovers, unadj_closes, universe_active,
+                    reset_month=2, percentile=7.5, length=21, which='last'):
+        """
+        Volume-bucket pass/fail (con_2 from the legacy rpt_strat).
+        Returns a 0/1-style boolean frame: True where a ticker's `length`-day
+        average of (turnover / unadjusted_close) exceeds an annual threshold.
+        The threshold is the `percentile`-th value of universe members' single-day
+        volume on the chosen trading day of `reset_month`, carried forward until the
+        next reset. universe_active is the active_tickers comma-string frame.
+        """
+        uv = turnovers / unadj_closes
+        avg = uv.rolling(length).mean()
+
+        # active_tickers (comma string per date) -> set per date
+        col = universe_active.columns[0]
+        uni = universe_active.reindex(avg.index)
+        uni_sets = {d: (set(s.split(",")) if isinstance(s, str) and s else set())
+                    for d, s in uni[col].items()}
+
+        # the chosen trading day of reset_month, per year ('last' wins, matching the original)
+        by_year = {}
+        for ts in avg.index:
+            t = pd.Timestamp(ts)
+            if t.month == reset_month:
+                if which == 'last':
+                    by_year[t.year] = ts
+                else:
+                    by_year.setdefault(t.year, ts)
+        reset_days = list(by_year.values())
+
+        # annual threshold: percentile of universe members' single-day volume on the reset day
+        buckets = {}
+        for ad in reset_days:
+            ser = uv.loc[ad].dropna()
+            members = [tk for tk in uni_sets.get(ad, set()) if tk in ser.index]
+            if not members:
+                continue
+            sorted_ser = ser[members].sort_values(ascending=True)
+            ban_len = round(len(sorted_ser) * percentile / 100)
+            idx = ban_len - 1 if ban_len > 0 else 0
+            buckets[ad] = float(sorted_ser.iloc[idx])
+
+        # step function: carry each reset-day threshold forward to the next reset
+        if buckets:
+            s = pd.Series(list(buckets.values()),
+                          index=pd.to_datetime(list(buckets.keys()))).sort_index()
+            thresh = s.reindex(avg.index, method='ffill').fillna(0.0)
+        else:
+            thresh = pd.Series(0.0, index=avg.index)
+
+        # 1 where avg_volume > threshold, else 0 (NaN average -> False -> 0)
+        return avg.gt(thresh, axis=0).astype('float32')
 
     @staticmethod
     def _compute_value_indicators(rules, price_data, rebalance, univ, indicator_set):
@@ -421,9 +508,16 @@ class GeneratePricesIndicators:
                     df_out = date_to_active_tickers.to_frame(name="active_tickers")
                     price_data[f'{univ}_universe'] = df_out["active_tickers"].apply(lambda x: ",".join(x)).to_frame()
 
-                    # Load closes for each unique ticker referenced in market trend rules
+                    # Load closes for each unique ticker referenced in market trend
+                    # and volatility-cut (freeze/resume) rules.
                     mt_tickers = GeneratePricesIndicators._extract_tickers_from_tree(
                         marketRegime.market_trend_rules_tree)
+                    # Volatility-cut (freeze/resume) rules may reference VIX/SPY etc. too
+                    mt_tickers |= GeneratePricesIndicators._extract_tickers_from_tree(
+                        getattr(marketRegime, "freeze_rules_tree", None))
+                    mt_tickers |= GeneratePricesIndicators._extract_tickers_from_tree(
+                        getattr(marketRegime, "resume_rules_tree", None))
+
                     if not mt_tickers:
                         mt_tickers = {'spy'}  # fallback to SPY if no tickers specified
                     for ticker in mt_tickers:
@@ -447,6 +541,11 @@ class GeneratePricesIndicators:
                 entry_rules = list(GeneratePricesIndicators.iter_rules_from_tree(marketRegime.entry_rules_tree))
                 exit_rules = list(GeneratePricesIndicators.iter_rules_from_tree(marketRegime.exit_rules_tree))
                 market_trend_rules = list(GeneratePricesIndicators.iter_rules_from_tree(marketRegime.market_trend_rules_tree))
+
+                freeze_rules = list(
+                    GeneratePricesIndicators.iter_rules_from_tree(getattr(marketRegime, "freeze_rules_tree", None)))
+                resume_rules = list(
+                    GeneratePricesIndicators.iter_rules_from_tree(getattr(marketRegime, "resume_rules_tree", None)))
 
                 #Entry Indicator Rules
                 GeneratePricesIndicators._compute_rule_indicators(entry_rules, price_data, strategy.rebalance, univ,
@@ -475,6 +574,12 @@ class GeneratePricesIndicators:
                 # Market Trend Value Indicators
                 GeneratePricesIndicators._compute_market_trend_value_indicators(market_trend_rules, price_data,
                                                                                 strategy.rebalance, univ, indicator_set= indictor_Set)
+
+                # Volatility-cut (freeze/resume) — dedicated, separate from market-trend.
+                GeneratePricesIndicators._compute_volatility_cut_indicators(
+                    freeze_rules, price_data, strategy.rebalance, indictor_Set)
+                GeneratePricesIndicators._compute_volatility_cut_indicators(
+                    resume_rules, price_data, strategy.rebalance, indictor_Set)
 
                 # Trading Days
                 GeneratePricesIndicators._compute_trading_dates(price_data, strategy.rebalance, univ, strategy, loader)

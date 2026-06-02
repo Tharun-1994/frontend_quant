@@ -83,6 +83,42 @@ class PriceDataLoader:
                                                           index_col=['Date'], parse_dates=True)
         }
 
+    def load_ticker_close(self, ticker: str, rebalance: str = '') -> dict:
+        """
+        Load close prices for any index ticker from the shared index folder.
+
+        Reads:  {index_path}/daily_closes_{ticker}.csv
+        Returns: { '{rebalance}_closes_{ticker}': DataFrame }
+
+        This is the generic counterpart to load_spy_close.
+        Any ticker added to generate_index_prices.INDEX_REGISTRY is automatically
+        available here — no code changes needed when new indexes are added.
+
+        Parameters
+        ----------
+        ticker : str
+            Lowercase ticker key, e.g. 'vix', 'spxmcsum', 'gld'.
+            Must match a key produced by generate_index_prices.py.
+        rebalance : str
+            Rebalance prefix, e.g. 'DAILY'.
+
+        Raises
+        ------
+        FileNotFoundError
+            If daily_closes_{ticker}.csv does not exist in the index folder.
+            Run generate_index_prices.py to create it.
+        """
+        import os
+        ticker = ticker.lower()
+        csv_path = os.path.join(PricePath.index_path, f'daily_closes_{ticker}.csv')
+        if not os.path.exists(csv_path):
+            raise FileNotFoundError(
+                f"Index close file not found: {csv_path}\n"
+                f"Run generate_index_prices.py --only {ticker} to generate it."
+            )
+        df = pd.read_csv(csv_path, index_col=['Date'], parse_dates=True)
+        return {f'{rebalance}_closes_{ticker}': df}
+
     def load_sector_mapping(self):
         """Load sector/industry classification from SnP_500_INDUSTRIES.csv (tab-separated, no header)."""
         import os

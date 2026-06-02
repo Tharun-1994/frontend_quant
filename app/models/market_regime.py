@@ -73,6 +73,10 @@ class MarketRegime(Base):
 
     is_look_inside_bar = Column(Boolean, default=False)
 
+    # If True, open positions in this regime are force-closed at next open
+    # when the market trend shifts away. False = positions exit normally.
+    close_positions_on_regime_exit = Column(Boolean, default=False)
+
     sector_level = Column(Integer, nullable=True)
     sector_limit = Column(Integer, nullable=True)
 
