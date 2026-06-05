@@ -91,5 +91,19 @@ class MarketRegime(Base):
     # Stored as JSON string e.g. '{"enabled":true,"spy_ticker":"spy","vol_pct_bull":0.2,...}'
     vol_filter_json = Column(Text, nullable=True)
 
+    freeze_timing = Column(String(10), default="open")
+    resume_timing = Column(String(10), default="open")
+
+    # Type of volatility safety net engaged for this regime.
+    #   "none"           → no safety net; strategy trades freely
+    #   "simple"         → stateless freeze/resume rule trees (current behaviour)
+    #   "spy_volatility" → stateful 4-escape state machine (Stage 3)
+    # Default "none" keeps existing strategies unchanged.
+    safety_net_type = Column(String(20), default="none")
+    # JSON-serialised list of SafetyNetItem objects.
+    # See app/schemas/strategy.py::SafetyNetItem for the shape.
+    # NULL or empty list means "no safety nets — strategy trades freely".
+    safety_nets_json = Column(String)  # NVARCHAR(MAX) on SQL Server
+
     # # RELATIONSHIP
     strategy = relationship("StrategyBucket", back_populates="regimes")

@@ -789,6 +789,49 @@ class IndicatorCalculator:
 
     @staticmethod
     @register
+    def ConsecutiveDown(prices, n=0):
+        """For each date, returns the length of the consecutive-down-close
+        streak ENDING on that date. A down day is close[t] < close[t-1].
+        Example: closes [10, 9, 8, 7, 8] → streak [0, 1, 2, 3, 0].
+
+        Use rule: consec_down >= N to require an N-day down streak.
+        The `n` parameter is unused (lookback ignored — pure derived series).
+
+        Implementation: pandas' groupby() requires a 1-D grouper, so we
+        apply the per-Series streak logic to each ticker column independently.
+        """
+        is_down = prices.diff() < 0
+        # Per-column: group by "reset points" (where not down) and cumsum the streak
+        return is_down.apply(
+            lambda col: col.astype(int).groupby((~col).cumsum()).cumsum()
+        )
+
+    @staticmethod
+    @register
+    def RollingVolatilityMedian(prices, vol_lookback=20, median_lookback=252):
+        """Rolling median of rolling-stddev — for relative-threshold safety nets.
+        Computes the rolling stddev first, then takes its rolling median.
+        Used by spy_volatility_pause safety net to determine 'normal' vol regime."""
+        vol = prices.pct_change().rolling(vol_lookback).std()
+        return vol.rolling(median_lookback).median()
+
+    @staticmethod
+    @register
+    def RollingVolatilityUnshifted(prices, n=5):
+        """Rolling stddev of daily pct changes through TODAY's close (no shift).
+           For close-timing freeze rules and SPY-vol safety net."""
+        return prices.pct_change().rolling(n).std(ddof=0)
+
+    @staticmethod
+    @register
+    def IBS(Closes, Highs, Lows):
+        """Internal Bar Strength: where today's close sits within today's range.
+        IBS = (close - low) / (high - low). Range [0, 1].
+        Below 0.5 = close in lower half of day's range (mean-reversion entry).
+        Above 0.5 = close in upper half (mean-reversion exit)."""
+        return (Closes - Lows) / (Highs - Lows)
+    @staticmethod
+    @register
     def TrueRange(Highs, Lows, Closes):
         """
         Calculates the true range values for time-series data of multiple stocks.

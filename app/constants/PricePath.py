@@ -20,6 +20,8 @@ class PricePath:
     liquid500base_path=r'C:\Tharun\Projects\backtest_data\universes\liquid500'
     russell3000base_path=r'C:\Tharun\Projects\backtest_data\universes\russell3000'
     spy_path = r'C:\Tharun\Projects\backtest_data\universes\spy'
+    sp100base_path = r'C:\Tharun\Projects\backtest_data\universes\sp100'
+    nasdaq100base_path = r'C:\Tharun\Projects\backtest_data\universes\nasdaq100'
 
     index_path=r'C:\Tharun\Projects\backtest_data\universes\index'
 
@@ -29,6 +31,8 @@ class PricePath:
     def getBacktestInputPath(universe="",strategy_name=""):
         valid_universes = [
             UNIVERSES_Codes['S&P 500'],
+            UNIVERSES_Codes['S&P 100'],
+            UNIVERSES_Codes['Nasdaq 100'],
             UNIVERSES_Codes['Liquid 500'],
             UNIVERSES_Codes['Russell 3000'],
             UNIVERSES_Codes['SPY']

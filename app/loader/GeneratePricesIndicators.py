@@ -147,6 +147,90 @@ class GeneratePricesIndicators:
                     price_data[key] = src
 
     @staticmethod
+    def _compute_safety_net_indicators(safety_nets, price_data, rebalance, indicator_set):
+        """Generate parquets needed by stateful safety-net policies.
+
+        Walks `marketRegime.safety_nets` and emits the right derived indicator
+        per policy type. Engine-side policies read these parquets via the
+        existing frame loader instead of recomputing.
+
+        spy_volatility:
+          For each item, computes rolling-stddev-of-pct-change (unshifted)
+          on the configured ticker's closes and stores under key
+          '{ticker}_rolling_vol_close_{lookback}'. Default ticker=SPY,
+          lookback=5. Matches Python L_SMR_STATIC's `all_safety_net_vol`.
+        """
+        for sn in safety_nets or []:
+            # Pydantic v1 model → use .type / .params directly.
+            # Tolerate dicts too (in case anyone passes raw JSON later).
+            sn_type = (getattr(sn, "type", None) or
+                       (sn.get("type") if isinstance(sn, dict) else "") or "").lower()
+            params = (getattr(sn, "params", None) or
+                      (sn.get("params") if isinstance(sn, dict) else {}) or {})
+
+            if sn_type == "spy_volatility":
+                ticker = (params.get("vol_ticker") or "SPY").lower()
+                lookback = int(params.get("vol_lookback") or 5)
+                key = f"{ticker}_rolling_vol_close_{lookback}"
+                if key in indicator_set:
+                    continue
+
+                src = price_data.get(f"{rebalance}_closes_{ticker}")
+                if src is None:
+                    print(f"[safety-net] no closes for ticker '{ticker}', "
+                          f"skipping {key}. Make sure the ticker is in the "
+                          f"strategy data set.")
+                    continue
+
+                result = GeneratePricesIndicators.call_indicator(
+                    FUNCTION_MAPPER["rolling_vol_close"],
+                    prices=src, n=lookback)
+                indicator_set.add(key)
+                price_data[key] = result
+                print(f"[safety-net] generated parquet '{key}' "
+                      f"({len(result)} rows)")
+
+            elif sn_type == "spy_volatility_pause":
+                # Relative-threshold pause: emit BOTH the vol and its rolling median.
+                # Engine policy reads both, computes effective threshold each day.
+                ticker = (params.get("vol_ticker") or "SPY").lower()
+                vol_lookback = int(params.get("vol_lookback") or 20)
+                median_lookback = int(params.get("vol_median_lookback") or 252)
+
+                src = price_data.get(f"{rebalance}_closes_{ticker}")
+                if src is None:
+                    print(f"[safety-net] no closes for ticker '{ticker}', "
+                          f"skipping spy_volatility_pause for {ticker}.")
+                    continue
+
+                # 1) The vol series itself
+                vol_key = f"{ticker}_rolling_vol_close_{vol_lookback}"
+                if vol_key not in indicator_set:
+                    vol = GeneratePricesIndicators.call_indicator(
+                        FUNCTION_MAPPER["rolling_vol_close"],
+                        prices=src, n=vol_lookback)
+                    indicator_set.add(vol_key)
+                    price_data[vol_key] = vol
+                    print(f"[safety-net] generated parquet '{vol_key}' ({len(vol)} rows)")
+
+                    # 2) The rolling median of that vol
+                    # NOTE: filename encodes only vol_lookback. median_lookback stays
+                    # in the computation but not the filename — keeps the key compatible
+                    # with the engine's single-lookback frame loader. Means one median
+                    # parquet per vol_lookback (regenerated when median_lookback changes).
+                    median_key = f"{ticker}_rolling_vol_median_{vol_lookback}"
+                    if median_key not in indicator_set:
+                        result = GeneratePricesIndicators.call_indicator(
+                            FUNCTION_MAPPER["rolling_vol_median"],
+                            prices=src,
+                            vol_lookback=vol_lookback,
+                            median_lookback=median_lookback)
+                        indicator_set.add(median_key)
+                        price_data[median_key] = result
+                        print(f"[safety-net] generated parquet '{median_key}' ({len(result)} rows, "
+                              f"median_lookback={median_lookback} embedded in values)")
+
+    @staticmethod
     def _compute_market_trend_rules(rules, marketRegime, price_data, rebalance, univ, indicator_set):
         """Compute primary indicators for market trend rules."""
         for rule in rules or []:
@@ -265,6 +349,18 @@ class GeneratePricesIndicators:
                                                                  prices=price_data[f'{rebalance}_closes'],
                                                                  n=rule.lookback)
 
+            elif rule.indicator == 'ibs':
+                # IBS = (close - low) / (high - low), per-bar within today's OHLC
+                result = GeneratePricesIndicators.call_indicator(
+                    FUNCTION_MAPPER['ibs'],
+                    Closes=price_data[f'{rebalance}_closes'],
+                    Highs =price_data[f'{rebalance}_highs'],
+                    Lows  =price_data[f'{rebalance}_lows'])
+            elif rule.indicator == 'consec_down':
+                # Pure price-pattern derived series — ignores lookback param
+                result = GeneratePricesIndicators.call_indicator(
+                    FUNCTION_MAPPER['consec_down'],
+                    prices=price_data[f'{rebalance}_closes'])
             elif rule.indicator in ('adx', 'atr'):
                 result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[rule.indicator],
                                                                  Highs=price_data[f'{rebalance}_highs'],
@@ -310,6 +406,15 @@ class GeneratePricesIndicators:
                                                                  week_high_in_days=n_week_days,
                                                                  high_last_days=within_days)
                 key = f'{rule.indicator}_{n_week_days}_{within_days}'
+            elif rule.indicator == 'rolling_vol':
+                # Rolling standard-deviation of 1-day-shifted pct changes.
+                # Primarily used as a ranking indicator (mean-reversion strategies
+                # rank by historical vol). Matches Python:
+                #   prices.shift(1).pct_change().rolling(n).std()
+                result = GeneratePricesIndicators.call_indicator(
+                    FUNCTION_MAPPER['rolling_vol'],
+                    prices=price_data[f'{rebalance}_closes'],
+                    n=rule.lookback)
 
             elif rule.indicator == 'sharpe':
                 p = rule.params or {}
@@ -492,12 +597,18 @@ class GeneratePricesIndicators:
 
                 if univ == 'sp500':
                     loader = PriceDataLoader(PricePath.sp500base_path)
+                elif univ == 'sp100':
+                    loader = PriceDataLoader(PricePath.sp100base_path)
+                elif univ == 'nasdaq100':
+                    loader = PriceDataLoader(PricePath.nasdaq100base_path)
                 elif univ == 'liquid500':
                     loader = PriceDataLoader(PricePath.liquid500base_path)
+                elif univ == 'russell3000':
+                    loader = PriceDataLoader(PricePath.russell3000base_path)
                 elif univ.lower() == 'SPY'.lower():
                     loader = PriceDataLoader(PricePath.spy_path)
                 else:
-                    loader = PriceDataLoader(PricePath.russell3000base_path)
+                    raise ValueError(f"Unknown universe: {univ}")
 
 
 
@@ -576,10 +687,17 @@ class GeneratePricesIndicators:
                                                                                 strategy.rebalance, univ, indicator_set= indictor_Set)
 
                 # Volatility-cut (freeze/resume) — dedicated, separate from market-trend.
+                # Volatility-cut (freeze/resume) — dedicated, separate from market-trend.
                 GeneratePricesIndicators._compute_volatility_cut_indicators(
                     freeze_rules, price_data, strategy.rebalance, indictor_Set)
                 GeneratePricesIndicators._compute_volatility_cut_indicators(
                     resume_rules, price_data, strategy.rebalance, indictor_Set)
+
+                # Safety-net indicators — derived parquets needed by stateful
+                # policies in the engine (e.g. spy_volatility's rolling vol).
+                GeneratePricesIndicators._compute_safety_net_indicators(
+                    getattr(marketRegime, "safety_nets", None),
+                    price_data, strategy.rebalance, indictor_Set)
 
                 # Trading Days
                 GeneratePricesIndicators._compute_trading_dates(price_data, strategy.rebalance, univ, strategy, loader)

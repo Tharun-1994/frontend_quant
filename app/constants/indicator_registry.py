@@ -31,6 +31,7 @@ ENTRY         = "entry"
 EXIT          = "exit"
 MARKET_REGIME = "market_regime"
 VOLATILITY    = "volatility"
+RANKING       = "ranking"
 
 # ---------------------------------------------------------------------------
 # Side constants
@@ -155,7 +156,8 @@ INDICATOR_REGISTRY = {
         "caution_note":         None,
         "sort_order":           4,
         "availability": (
-            _avail(EQUITY_REGIMES, [ENTRY, EXIT], LHS, sort_order=4)
+            _avail(EQUITY_REGIMES, [ENTRY, EXIT], LHS, sort_order=4)+
+            _avail(EQUITY_REGIMES, [RANKING],     LHS, sort_order=2)
         ),
     },
 
@@ -281,9 +283,64 @@ INDICATOR_REGISTRY = {
         "caution_note":         None,
         "sort_order":           2,
         "availability": (
-            _avail(EQUITY_REGIMES, [ENTRY, EXIT, VOLATILITY], LHS, sort_order=2)
+            _avail(EQUITY_REGIMES, [ENTRY, EXIT, VOLATILITY], LHS, sort_order=2) +
+            _avail(EQUITY_REGIMES, [RANKING],                 LHS, sort_order=1)
         ),
     },
+
+    "rolling_vol": {
+        "display_name":         "Rolling Volatility",
+        "category":             "Volatility",
+        "has_lookback":         True,
+        "default_lookback":     252,
+        "has_params":           False,
+        "params":               [],
+        "params_description":   None,
+        "kind":                 None,
+        "has_range":            False,
+        "universe_restriction": None,
+        "caution_note":         None,
+        "sort_order":           3,
+        "availability": (
+            _avail(EQUITY_REGIMES, [RANKING], LHS, sort_order=3)
+        ),
+    },
+    "ibs": {
+        "display_name":         "IBS",
+        "category":             "Momentum",
+        "has_lookback":         False,
+        "default_lookback":     0,
+        "has_params":           False,
+        "params":               [],
+        "params_description":   None,
+        "kind":                 None,
+        "has_range":            True,
+        "universe_restriction": None,
+        "caution_note":         None,
+        "sort_order":           2,
+        "availability": (
+            _avail(EQUITY_REGIMES, [ENTRY, EXIT], LHS, sort_order=2)
+        ),
+    },
+    "consec_down": {
+        "display_name":         "Consecutive Down Days",
+        "category":             "Price Pattern",
+        "has_lookback":         False,
+        "default_lookback":     0,
+        "has_params":           False,
+        "params":               [],
+        "params_description":   None,
+        "kind":                 None,
+        "has_range":            False,
+        "universe_restriction": None,
+        "caution_note":         "Returns streak length ending today. Use `>= N` to require N consecutive down days.",
+        "sort_order":           1,
+        "availability": (
+            _avail(EQUITY_REGIMES, [ENTRY], LHS, sort_order=1)
+        ),
+    },
+
+    # ── Price ─────────────────────────────────────────────────────────────────
 
     # ── Price ─────────────────────────────────────────────────────────────────
 

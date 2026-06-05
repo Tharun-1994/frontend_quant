@@ -18,13 +18,17 @@ UNIVERSES = {
     "sp500": "S&P 500",
     "russell3000": "Russell 3000",
     "liquid500": "Liquid 500",
-    "spy" : "SPY"
+    "spy" : "SPY",
+    "sp100": "S&P 100",
+    "nasdaq100": "Nasdaq 100",
 }
 UNIVERSES_Codes = {
     "S&P 500": "sp500",
     "Russell 3000": "russell3000",
     "Liquid 500": "liquid500",
-    "SPY":"spy"
+    "SPY":"spy",
+    "S&P 100": "sp100",
+    "Nasdaq 100": "nasdaq100",
 }
 
 # Indicators (for rule building)
@@ -57,7 +61,11 @@ FUNCTION_MAPPER = {
     "n_week_high_recent": "n_week_high_recent",
     "sharpe":"SharpeRatio",
     "rolling_vol": "RollingVolatility",
+    "rolling_vol_close": "RollingVolatilityUnshifted",
+    "ibs": "IBS",
     "roc": "ROC",
+    "consec_down": "ConsecutiveDown",
+    "rolling_vol_median": "RollingVolatilityMedian",
 }
 
 REBALANCE = {

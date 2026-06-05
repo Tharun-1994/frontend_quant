@@ -51,6 +51,33 @@ class VolFilter(BaseModel):
     turnover_pct_bull: float = 0.35  # bottom 35% excluded when SPY > SMA200
     turnover_pct_bear: float = 0.05  # bottom 5%  excluded when SPY <= SMA200
 
+class SafetyNetItem(BaseModel):
+    """One stateful safety net policy.
+
+    `type` selects the policy class on the engine side.
+    `params` is a free-form blob; each policy validates its own shape.
+
+    Examples
+    --------
+    Simple freeze/resume:
+        { "type": "simple",
+          "params": {
+            "freeze_rules_tree": {...},
+            "resume_rules_tree": {...},
+            "freeze_timing": "open",
+            "resume_timing": "open"
+          } }
+
+    SPY volatility (Stage 3c):
+        { "type": "spy_volatility",
+          "params": {
+            "vol_ticker": "SPY", "vol_lookback": 5, "vol_threshold": 0.025,
+            "timeout_days": 20, "selloff_pct": 0.20,
+            "peak_drop_pct": 0.80, "rearm_pct": 0.80
+          } }
+    """
+    type: str
+    params: Dict[str, Any] = {}
 
 class MarketRegimeBase(BaseModel):
     id: Optional[int] = None
@@ -66,6 +93,14 @@ class MarketRegimeBase(BaseModel):
 
     entry_timing: Optional[str] = None
     exit_timing: Optional[str] = None
+
+    freeze_timing: Optional[str] = "open"  # "open" | "close"
+    resume_timing: Optional[str] = "open"  # "open" | "close"
+    safety_net_type: Optional[str] = "none"  # "none" | "simple" | "spy_volatility"
+    # New list-based contract. Each item is a stateful policy with its own
+    # config blob. The engine iterates them per day; any item saying "freeze"
+    # stops trading. See SAFETY_NET_TYPES in the frontend for valid types.
+    safety_nets: Optional[List[SafetyNetItem]] = None
 
     stoploss_type: Optional[str] = None
     takeprofit_type: Optional[str] = None

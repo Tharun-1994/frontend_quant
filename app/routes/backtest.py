@@ -155,6 +155,22 @@ def sort_rules_by_connector(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         key=lambda r: 0 if r.get("connector") in ("AND", "OR", "&&", "||") else 1,
     )
 
+def _load_safety_nets(db_obj):
+    """Read safety_nets_json off a marketregime row and return List[SafetyNetItem].
+
+    Returns None when the column is NULL/empty — the engine treats this as
+    'no safety nets configured'. Falls back gracefully on malformed JSON
+    so a single bad row doesn't crash all backtests.
+    """
+    blob = getattr(db_obj, "safety_nets_json", None)
+    if not blob:
+        return None
+    try:
+        return json.loads(blob)
+    except Exception as e:
+        print(f"[WARN] safety_nets_json parse failed for regime "
+              f"{getattr(db_obj, 'id', '?')}: {e}")
+        return None
 
 def db_to_pydantic(db_obj: MarketRegime) -> MarketRegimeBase:
     return MarketRegimeBase(
@@ -177,6 +193,10 @@ def db_to_pydantic(db_obj: MarketRegime) -> MarketRegimeBase:
         ),
         entry_timing=db_obj.entry_timing,
         exit_timing=db_obj.exit_timing,
+        freeze_timing=db_obj.freeze_timing or "open",
+        resume_timing=db_obj.resume_timing or "open",
+        safety_net_type=db_obj.safety_net_type or "none",
+        safety_nets=_load_safety_nets(db_obj),
         stoploss_type=db_obj.stoploss_type,
         takeprofit_type=db_obj.takeprofit_type,
         takeprofit_dollar=db_obj.takeprofit_dollar,

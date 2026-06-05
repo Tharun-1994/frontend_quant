@@ -187,6 +187,18 @@ def save_market_regime(marketregime: MarketRegimeBase, db: Session = Depends(get
     db_obj.market_trend_rules_labels     = None
     db_obj.entry_timing                  = marketregime.entry_timing
     db_obj.exit_timing                   = marketregime.exit_timing
+    db_obj.freeze_timing = marketregime.freeze_timing or "open"
+    db_obj.resume_timing = marketregime.resume_timing or "open"
+    db_obj.safety_net_type = marketregime.safety_net_type or "none"
+    if marketregime.safety_nets is None:
+        db_obj.safety_nets_json = None
+    else:
+        # Pydantic v1: .dict() / v2: .model_dump()
+        items = [
+            (sn.dict() if hasattr(sn, "dict") else sn.model_dump())
+            for sn in marketregime.safety_nets
+        ]
+        db_obj.safety_nets_json = json.dumps(items)
     db_obj.stoploss_type                 = marketregime.stoploss_type
     db_obj.takeprofit_type               = marketregime.takeprofit_type
     db_obj.takeprofit_dollar             = marketregime.takeprofit_dollar

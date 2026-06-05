@@ -35,6 +35,10 @@ from app.routes.equity_view import router as equity_router
 from app.routes.indicators_route import router as indicators_router
 from app.routes.strategies import router as strategies_router
 from app.services.sync_indicators import sync_indicators
+# mechanics:BEGIN  (revert: delete this block)
+from app.routes.mechanics_route import router as mechanics_router
+from app.services.sync_mechanics import sync_mechanics
+# mechanics:END
 from app.Settings import settings
 
 logging.basicConfig(level=logging.INFO)
@@ -53,6 +57,14 @@ async def lifespan(app: FastAPI):
         logger.info(result.summary())
     finally:
         db.close()
+    # mechanics:BEGIN  (revert: delete this block)
+    db = SessionLocal()
+    try:
+        mech_result = sync_mechanics(db)
+        logger.info(mech_result.summary())
+    finally:
+        db.close()
+    # mechanics:END
     yield  # app runs here
 
 
@@ -84,6 +96,9 @@ app.include_router(strategies_router)
 app.include_router(backtest_router)
 app.include_router(equity_router)
 app.include_router(indicators_router)
+# mechanics:BEGIN  (revert: delete this block)
+app.include_router(mechanics_router)
+# mechanics:END
 
 
 # ── Global exception handler ──────────────────────────────────────────────────
@@ -110,7 +125,7 @@ def health():
 def main():
     uvicorn.run(
         "app.main:app",
-        host=settings.HOST,
+        host="192.168.1.66",
         port=settings.PORT,
         reload=True,
     )
