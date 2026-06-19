@@ -120,23 +120,67 @@ class PriceDataLoader:
         return {f'{rebalance}_closes_{ticker}': df}
 
     def load_sector_mapping(self):
-        """Load sector/industry classification from SnP_500_INDUSTRIES.csv (tab-separated, no header)."""
+        """Load sector/industry classification from SnP_500_INDUSTRIES.csv (tab-separated, no header).
+
+        Patch 49: when self.base_path is the LIVE folder
+        (backtest_data/live_universes/sp500/) the CSV typically isn't there —
+        it's a hand-maintained static artifact that lives in
+        backtest_data/universes/sp500/. Fall back to that static path so
+        production runs find it without duplicating the file. Backtest mode
+        passes the static path as base_path directly, so the first lookup
+        succeeds and the fallback is never hit.
+        """
         import os
         sector_path = os.path.join(self.base_path, 'SnP_500_INDUSTRIES.csv')
         if not os.path.exists(sector_path):
-            print(f"[WARNING] Sector file not found: {sector_path}")
-            return {}
+            # Patch 49 fallback — static backtest folder is the single source of truth
+            from app.constants.PricePath import PricePath
+            fallback_path = os.path.join(PricePath.sp500base_path, 'SnP_500_INDUSTRIES.csv')
+            if os.path.exists(fallback_path):
+                print(f"[load_sector_mapping] live path missed, using fallback: {fallback_path}")
+                sector_path = fallback_path
+            else:
+                print(f"[WARNING] Sector file not found in live OR static: "
+                      f"{sector_path} / {fallback_path}")
+                return {}
         df = pd.read_csv(sector_path, sep='\t', header=None,
                          names=['symbol', 'level_1', 'level_2', 'level_3', 'level_4', 'level_5'])
         df.set_index('symbol', inplace=True)
         return {'sector_mapping': df}
 
-    def uploadCommonPath(self, price_data={}, universe="", strategy_name=""):
+    def uploadCommonPath(self, price_data={}, universe="", strategy_name="",
+                         production=False, run_date=None):
+        """Write computed parquets.
+
+        C1 Patch 2: when production=True, writes to the universe-shared,
+        date-stamped exec_data folder (PricePath.getExecDataInputPath).
+        Otherwise writes to the legacy per-strategy backtest_data folder
+        (PricePath.getBacktestInputPath). Backtest behaviour is unchanged
+        when production is omitted — all existing callers pass nothing
+        for the new args and take the legacy branch.
+
+        Args:
+            price_data: dict of {field_name: DataFrame} to write.
+            universe: universe slug (e.g. "sp500"). Required.
+            strategy_name: strategy name (ignored when production=True
+                because exec_data is universe-shared).
+            production: when True, write to exec_data path. Default False
+                preserves backtest behaviour.
+            run_date: the data date (the day Norgate posted EOD data).
+                Used to name the date-stamped exec_data folder. Defaults
+                to today when None. Ignored when production=False.
+        """
+        # C1 Patch 2: resolve output directory once, branch on production flag.
+        if production:
+            out_dir = PricePath.getExecDataInputPath(universe=universe, run_date=run_date)
+        else:
+            out_dir = PricePath.getBacktestInputPath(universe=universe, strategy_name=strategy_name)
+
         for k in price_data.keys():
             if 'universe' not in k and 'trading_dates' not in k and 'all_dates' not in k and 'sector_mapping' not in k:
                 if universe.lower() != 'spy':
                     price_data[k] = price_data[k].astype("float32")
-            price_data[k].to_parquet(f'{PricePath.getBacktestInputPath(universe=universe, strategy_name=strategy_name)}/{k}.parquet')
+            price_data[k].to_parquet(f'{out_dir}/{k}.parquet')
 
     def get_trading_dates(self, start_trading=None, end_trading=None,
                           use_data=True, daily_closes=pd.Series(), all_dates=[], max_lookback=255, rebalance='daily'):

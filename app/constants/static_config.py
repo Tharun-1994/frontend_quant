@@ -21,6 +21,7 @@ UNIVERSES = {
     "spy" : "SPY",
     "sp100": "S&P 100",
     "nasdaq100": "Nasdaq 100",
+    "lra14": "LRA 14",   # LRA Patch 44
 }
 UNIVERSES_Codes = {
     "S&P 500": "sp500",
@@ -29,6 +30,7 @@ UNIVERSES_Codes = {
     "SPY":"spy",
     "S&P 100": "sp100",
     "Nasdaq 100": "nasdaq100",
+    "LRA 14": "lra14",   # LRA Patch 44
 }
 
 # Indicators (for rule building)
@@ -63,6 +65,7 @@ FUNCTION_MAPPER = {
     "rolling_vol": "RollingVolatility",
     "rolling_vol_close": "RollingVolatilityUnshifted",
     "ibs": "IBS",
+    "daily_range_pct": "DailyRangePct",   # LRA Patch 16
     "roc": "ROC",
     "consec_down": "ConsecutiveDown",
     "rolling_vol_median": "RollingVolatilityMedian",
@@ -93,14 +96,56 @@ SYSTEM_TYPE = {
     # "short":"SHORT"
 }
 
-STOPLOSS_TYPE={
+# Patch 60: STOPLOSS_TYPE extended with dollar_based (ETF only) and portfolio
+# (portfolio-level kill switch). Adding a new type requires:
+#   1. New entry in STOPLOSS_TYPE below
+#   2. New entry in STOPLOSS_TYPE_REGIME_GATING below (which regimes allow it)
+#   3. Mirror in React options.ts (Patch 61) and Java StaticConfig.java (Patch 62)
+#   4. Engine handler in PortfolioServiceImplV2 (Patch 64)
+STOPLOSS_TYPE = {
     "nrml": "NORMAL",
-    "atr_based": "ATR_BASED"
+    "atr_based": "ATR_BASED",
+    "dollar_based": "DOLLAR_BASED",
+    "portfolio": "PORTFOLIO",
 }
-TAKEPROFIT_TYPE ={
+TAKEPROFIT_TYPE = {
     "nrml": "NORMAL",
-    "atr_based": "ATR_BASED"
+    "atr_based": "ATR_BASED",
 }
+
+# Patch 60: stoploss-type → allowed regime types. ONE PLACE update.
+# - ETF regimes accept only DOLLAR_BASED.
+# - Non-ETF regimes accept NORMAL, ATR_BASED, PORTFOLIO.
+# Mirrored in React options.ts (STOPLOSS_TYPE_REGIME_GATING).
+STOPLOSS_TYPE_REGIME_GATING = {
+    "NORMAL":       ["Normal", "Simple", "Complex"],
+    "ATR_BASED":    ["Normal", "Simple", "Complex"],
+    "PORTFOLIO":    ["Normal", "Simple", "Complex"],
+    "DOLLAR_BASED": ["Individual ETFs - Simple"],
+}
+
+def allowed_stoploss_types_for_regime(regime_type):
+    """Return list of valid stoploss_type values for the given regime_type.
+
+    Empty list if regime_type is None/unknown. Used by save-marketregime-v2
+    validation (Patch 66) to reject mismatched stoploss/regime combos.
+    """
+    if not regime_type:
+        return []
+    return [
+        t for t, regimes in STOPLOSS_TYPE_REGIME_GATING.items()
+        if regime_type in regimes
+    ]
+
+# Patch 72d: drawdown anchor for PORTFOLIO stoploss type.
+# PEAK   — drawdown vs all-time peak equity (standard kill-switch).
+# DAILY  — single-day drop from previous close (circuit breaker).
+# Mirrored in React options.ts and Java StaticConfig.java.
+PORTFOLIO_STOPLOSS_ANCHOR = {
+    "peak":  "PEAK",
+    "daily": "DAILY",
+}
+PORTFOLIO_STOPLOSS_ANCHOR_DEFAULT = "PEAK"
 
 SPY_RETURNS = {
     2024: 24.89,

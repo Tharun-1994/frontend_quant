@@ -830,6 +830,22 @@ class IndicatorCalculator:
         Below 0.5 = close in lower half of day's range (mean-reversion entry).
         Above 0.5 = close in upper half (mean-reversion exit)."""
         return (Closes - Lows) / (Highs - Lows)
+
+    # LRA Patch 16: Daily Range % — pre-rank range filter for pair strategies
+    @staticmethod
+    @register
+    def DailyRangePct(Highs, Lows):
+        """Daily Range % — today's intraday spread as a percent of today's low.
+        Formula: (high - low) / low * 100.
+
+        Example: a stock that opened high 102, low 100 has a Daily Range % of 2.0.
+        A flat-day stock with high 100.20, low 100.00 has 0.2.
+
+        Used as a pre-rank liquidity / movement filter. In LRA pairs the threshold
+        depends on the ticker's range tier — wide-range names need 1.0%+ of daily
+        movement, narrow-range bonds and currencies need only 0.375%."""
+        return (Highs - Lows) / Lows * 100
+
     @staticmethod
     @register
     def TrueRange(Highs, Lows, Closes):

@@ -32,6 +32,10 @@ class MarketRegime(Base):
     exit_timing = Column(String)
 
     stoploss_type = Column(String(10))
+    # Patch 72b: PORTFOLIO drawdown anchor — 'PEAK' (drawdown from all-time
+    # peak equity) or 'DAILY' (single-day drop from previous close).
+    # Required when stoploss_type=='PORTFOLIO'; NULL otherwise.
+    portfolio_stoploss_anchor = Column(String(20), nullable=True)
     takeprofit_type = Column(String(10))
     stoploss_pct = Column(Numeric(5, 2))
     stoploss_dollar = Column(Numeric(5, 2))
@@ -57,7 +61,14 @@ class MarketRegime(Base):
 
     capital = Column(Numeric(18, 2))
     slots = Column(Integer)
-
+    # Patch 48: per-regime live execution sizing. Mirrors
+    # strategies_bucket.production_capital but at regime granularity (each
+    # regime can deploy a different live capital). Backfilled from the
+    # strategy-level field by migrate_production_capital_to_regime; the
+    # execution wiring (step 3) sizes off this and falls back to `capital`
+    # above when NULL. Backtest sizing always uses `capital` (untouched).
+    production_capital = Column(Numeric(18, 2), nullable=True)
+    
     created_at = Column(DateTime, server_default=func.now())
     max_time = Column(Integer)
 
@@ -104,6 +115,32 @@ class MarketRegime(Base):
     # See app/schemas/strategy.py::SafetyNetItem for the shape.
     # NULL or empty list means "no safety nets — strategy trades freely".
     safety_nets_json = Column(String)  # NVARCHAR(MAX) on SQL Server
+
+    # LRA Patch 12: LONGSHORT system_type fields (all NULL for existing strategies)
+    # Per-ticker static metadata: {ticker: {risk, color, hl_threshold}}
+    ticker_classification = Column(Text, nullable=True)
+    # Per-pair construction rule tree + match_action (e.g. swap_short_leg)
+    pairing_entry_rules   = Column(Text, nullable=True)
+    # Per-pair rule-driven exit tree + match_action (unused by LRA, schema present)
+    pairing_exit_rules    = Column(Text, nullable=True)
+    # Generic sizing policy: {mode: "capital_div_slots" | "fixed_dollar_per_leg", params: {...}}
+    sizing_policy         = Column(Text, nullable=True)
+    # Pair lifecycle policy (non-rule): {max_hold_sessions, force_close, profit_exit}
+    pair_exit_policy      = Column(Text, nullable=True)
+
+    # LRA Patch 34: per-leg entry rule trees for LONGSHORT pairs.
+    # Each is the same JSON shape as Patch 28's evaluator expects:
+    #   {type: "group", logic: "AND"|"OR", children: [...]}
+    # where children are either group nodes or leaf nodes (indicator + operator
+    # + value-or-value_indicator), or top_n_universe ranking leaves.
+    entry_rules_tree_long = Column(Text, nullable=True)
+    entry_rules_tree_short = Column(Text, nullable=True)
+
+    # Spec A1: how many extra ranked candidates beyond `slots` to persist as
+    # the substitute pool each night. Default 20. 0 disables substitution on
+    # this regime. Set per-regime; SignalEngine reads this when building the
+    # pool that the trader can promote to active via overlay-apply.
+    substitute_pool_size = Column(Integer, nullable=True, default=20)
 
     # # RELATIONSHIP
     strategy = relationship("StrategyBucket", back_populates="regimes")

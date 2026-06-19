@@ -9,10 +9,10 @@ in the universe", PriceProvider answers "what are their prices", this glues them
 
 from __future__ import annotations
 
-from universe_provider import UniverseProvider
-from price_provider import PriceProvider
-from storage import UniverseDataset
-from universe_registry import UniverseSpec
+from app.utiliy.universeGenerations.universe_provider import UniverseProvider
+from app.utiliy.universeGenerations.price_provider import PriceProvider
+from app.utiliy.universeGenerations.storage import UniverseDataset
+from app.utiliy.universeGenerations.universe_registry import UniverseSpec
 
 
 class DailyDataGenerator:

@@ -59,5 +59,14 @@ class Settings:
     def BACKTEST_JAVA_URL(self) -> str:
         return os.getenv("BACKTEST_JAVA_URL", "http://localhost:8080")
 
+    @property
+    def UPLOADED_SYSTEMS_PATH(self) -> str:
+        # Where uploaded System-Comparison CSVs are stored, in per-id subfolders
+        # (e.g. <BACKTEST_DATA_PATH>\compareEquities\3\equity.csv).
+        return os.getenv(
+            "UPLOADED_SYSTEMS_PATH",
+            os.path.join(self.BACKTEST_DATA_PATH, "compareEquities"),
+        )
+
 
 settings = Settings()

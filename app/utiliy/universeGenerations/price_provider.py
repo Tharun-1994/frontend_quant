@@ -82,6 +82,7 @@ class PriceProvider:
         part = pd.DataFrame()
         for ticker in tickers:
             try:
+                # print(f'[price_provider] {ticker} {start_date} -> {end_date}')
                 prices = norgatedata.price_timeseries(
                     ticker,
                     stock_price_adjustment_setting=adjust,
@@ -92,7 +93,11 @@ class PriceProvider:
                     interval=interval,
                     fields=fields)
                 prices.columns = pd.MultiIndex.from_product([[ticker], prices.columns])
+                # print(prices)
                 part = pd.concat([prices, part], axis=1)
-            except Exception:
-                print(f'[price_provider] price pull failed: {ticker}')
+            except Exception as e:
+                # LRA Patch 15-pre: surface the actual exception type and message
+                # so forex / unsupported-field failures aren't silently swallowed.
+                print(f'[price_provider] price pull failed: {ticker} '
+                      f'-> {type(e).__name__}: {e}')
         collected.append(part)

@@ -1,11 +1,29 @@
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import date
+import math
 import numpy as np
 from scipy.stats import linregress
 import pandas as pd
 from app.constants.static_config import SPY_RETURNS
 from app.loader import strategy_stat_functions
+
+
+def _clean_float(v) -> Optional[float]:
+    """Coerce a cell to a JSON-safe float.
+
+    Returns None for missing/NaN/inf so the payload stays valid JSON
+    (NaN is not legal JSON and breaks strict parsers / axios).
+    """
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(f) or math.isinf(f):
+        return None
+    return round(f, 2)
 
 
 class DrawdownRecord(BaseModel):
@@ -23,6 +41,32 @@ class YearlyReturn(BaseModel):
     spy: Optional[float]  # can be None for N/A
 
 
+class MonthlyReturnRow(BaseModel):
+    """One calendar year of strategy returns broken out by month.
+
+    ``months`` is always length 12 (Jan..Dec). A cell is None where the
+    strategy had no equity history for that month (e.g. it started mid-year),
+    which lets the frontend render that square as blank rather than 0.
+    ``total`` mirrors the figure shown on the Yearly Returns tab.
+    """
+    year: int
+    months: List[Optional[float]]
+    total: Optional[float]
+
+
+class MonthlyTradesRow(BaseModel):
+    """One calendar year of closed-trade counts broken out by month.
+
+    ``months`` is always length 12 (Jan..Dec). A cell is None for months
+    outside the strategy's equity coverage (so the heatmap blanks those
+    squares instead of showing a misleading 0); ``total`` is the year's
+    trade count and matches ``trades_per_year`` on the Yearly Returns tab.
+    """
+    year: int
+    months: List[Optional[int]]
+    total: int
+
+
 class PerformanceMetrics(BaseModel):
     total_profit: float
     total_trades: int
@@ -35,6 +79,8 @@ class PerformanceMetrics(BaseModel):
     avg_trade_len: float
     top10_dd: List[DrawdownRecord]
     yearly_returns: List[YearlyReturn]
+    monthly_returns: List[MonthlyReturnRow]
+    monthly_trades: List[MonthlyTradesRow]
 
     @staticmethod
     def calculate_performance(
@@ -102,14 +148,20 @@ class PerformanceMetrics(BaseModel):
             for row in events.sort_values('max_dd').head(10).to_dict(orient='records')
         ]
 
-        # --- Yearly Returns ---
-        yearly_returns_dict = strategy_stat_functions.monthly_returns(
+        # --- Monthly / Yearly Returns ---
+        # monthly_returns() returns a year x [1..12, 'Total'] matrix already.
+        # Previously only the 'Total' column was consumed for the yearly table;
+        # we now reuse the same matrix to drive the monthly-returns heatmap so
+        # the two views can never disagree (single source of truth).
+        monthly_df = strategy_stat_functions.monthly_returns(
             equity_df['equityValue'],
             starting_capital,
             False
-        )['Total'].round(2).to_dict()
+        )
 
-        # trades per year
+        yearly_returns_dict = monthly_df['Total'].round(2).to_dict()
+
+        # trades per year (kept for the existing yearly table)
         close_dates = pd.to_datetime(tradelist_df['exitDate'])
         yearly_trades = close_dates.dt.year.value_counts().sort_index().to_dict()
 
@@ -124,6 +176,49 @@ class PerformanceMetrics(BaseModel):
                 )
             )
 
+        # --- Monthly Returns matrix (Jan..Dec per year) ---
+        # Months with no equity history (e.g. before the strategy's first
+        # trade, or after its last) are blanked (None) rather than shown as a
+        # misleading 0.00. Genuinely flat in-period months keep their 0.00.
+        # This changes no totals: blanked months contributed 0 to the year.
+        eq_periods = {(int(ts.year), int(ts.month)) for ts in equity_df.index}
+
+        monthly_returns = []
+        for year, row in monthly_df.iterrows():
+            yr = int(year)
+            months = [
+                _clean_float(row.get(m)) if (yr, m) in eq_periods else None
+                for m in range(1, 13)
+            ]
+            monthly_returns.append(
+                MonthlyReturnRow(
+                    year=yr,
+                    months=months,
+                    total=_clean_float(row.get('Total')),
+                )
+            )
+
+        # --- Monthly Trades matrix (closed-trade counts, Jan..Dec per year) ---
+        mt_series = close_dates.groupby(
+            [close_dates.dt.year, close_dates.dt.month]
+        ).size()
+        mt_lookup = {(int(y), int(m)): int(c) for (y, m), c in mt_series.items()}
+
+        monthly_trades = []
+        for year in monthly_df.index:
+            yr = int(year)
+            counts = [
+                mt_lookup.get((yr, m), 0) if (yr, m) in eq_periods else None
+                for m in range(1, 13)
+            ]
+            monthly_trades.append(
+                MonthlyTradesRow(
+                    year=yr,
+                    months=counts,
+                    total=int(yearly_trades.get(yr, 0)),
+                )
+            )
+
         return PerformanceMetrics(
             total_profit=total_profit,
             total_trades=total_trades,
@@ -135,5 +230,7 @@ class PerformanceMetrics(BaseModel):
             k_ratio=k_ratio,
             avg_trade_len=avg_trade_len,
             top10_dd=top10_dd,
-            yearly_returns=yearly_returns
+            yearly_returns=yearly_returns,
+            monthly_returns=monthly_returns,
+            monthly_trades=monthly_trades,
         )

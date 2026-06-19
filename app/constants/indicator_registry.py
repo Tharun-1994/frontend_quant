@@ -138,7 +138,8 @@ INDICATOR_REGISTRY = {
         ),
         "sort_order": 3,
         "availability": (
-            _avail(EQUITY_REGIMES, [ENTRY, EXIT], LHS, sort_order=3)
+            _avail(EQUITY_REGIMES, [ENTRY, EXIT], LHS, sort_order=3)+
+            _avail(EQUITY_REGIMES, [RANKING],     LHS, sort_order=3)
         ),
     },
 
@@ -306,20 +307,38 @@ INDICATOR_REGISTRY = {
         ),
     },
     "ibs": {
-        "display_name":         "IBS",
-        "category":             "Momentum",
-        "has_lookback":         False,
-        "default_lookback":     0,
-        "has_params":           False,
-        "params":               [],
-        "params_description":   None,
-        "kind":                 None,
-        "has_range":            True,
+        "display_name": "IBS",
+        "category": "Momentum",
+        "has_lookback": False,
+        "default_lookback": 0,
+        "has_params": False,
+        "params": [],
+        "params_description": None,
+        "kind": None,
+        "has_range": True,
         "universe_restriction": None,
-        "caution_note":         None,
-        "sort_order":           2,
+        "caution_note": None,
+        "sort_order": 2,
         "availability": (
             _avail(EQUITY_REGIMES, [ENTRY, EXIT], LHS, sort_order=2)
+        ),
+    },
+    # LRA Patch 16: Daily Range % — pre-rank range filter for pair strategies
+    "daily_range_pct": {
+        "display_name": "Daily Range %",
+        "category": "Volatility",
+        "has_lookback": False,
+        "default_lookback": 0,
+        "has_params": False,
+        "params": [],
+        "params_description": None,
+        "kind": None,
+        "has_range": True,
+        "universe_restriction": None,
+        "caution_note": None,
+        "sort_order": 3,
+        "availability": (
+            _avail(EQUITY_REGIMES, [ENTRY, EXIT], LHS, sort_order=3)
         ),
     },
     "consec_down": {

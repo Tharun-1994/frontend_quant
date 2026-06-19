@@ -31,11 +31,13 @@ from app.database import engine, Base, SessionLocal
 from app.models import *  # registers all ORM models with Base
 from app.routes.backtest import router as backtest_router
 from app.routes.config_route import router as config_router
+from app.routes.eod import router as eod_router
+from app.routes.tradelist import router as tradelist_router
 from app.routes.equity_view import router as equity_router
 from app.routes.indicators_route import router as indicators_router
 from app.routes.strategies import router as strategies_router
+from app.routes.uploaded_systems import router as uploaded_systems_router
 from app.services.sync_indicators import sync_indicators
-# mechanics:BEGIN  (revert: delete this block)
 from app.routes.mechanics_route import router as mechanics_router
 from app.services.sync_mechanics import sync_mechanics
 # mechanics:END
@@ -99,7 +101,12 @@ app.include_router(indicators_router)
 # mechanics:BEGIN  (revert: delete this block)
 app.include_router(mechanics_router)
 # mechanics:END
-
+# C3: nightly EOD execution endpoints (PM trigger)
+app.include_router(eod_router)
+# F2/F3: tradelist read + stop-override patch + basket review
+app.include_router(tradelist_router)
+# System Comparison: upload + compare equity/tradelist CSVs
+app.include_router(uploaded_systems_router)
 
 # ── Global exception handler ──────────────────────────────────────────────────
 

@@ -205,6 +205,7 @@ def db_to_pydantic(db_obj: MarketRegime) -> MarketRegimeBase:
         takeprofit_pct=db_obj.takeprofit_pct,
         stoploss_timing=db_obj.stoploss_timing,
         takeprofit_timing=db_obj.takeprofit_timing,
+        portfolio_stoploss_anchor=db_obj.portfolio_stoploss_anchor,  # Patch 72f
         atr_lookback_stp=db_obj.atr_lookback_stp,
         atr_lookback_tp=db_obj.atr_lookback_tp,
         ranking=db_obj.ranking,
@@ -215,6 +216,10 @@ def db_to_pydantic(db_obj: MarketRegime) -> MarketRegimeBase:
         atr_limit_lookback=db_obj.atr_limit_lookback,
         universe=db_obj.universe,
         capital=db_obj.capital,
+        production_capital=(
+            float(db_obj.production_capital)
+            if db_obj.production_capital is not None else None
+        ),  # Patch 49
         slots=db_obj.slots,
         rebalance=db_obj.rebalance,
         created_at=db_obj.created_at,
@@ -241,6 +246,36 @@ def db_to_pydantic(db_obj: MarketRegime) -> MarketRegimeBase:
         vol_filter=(
             json.loads(db_obj.vol_filter_json) if db_obj.vol_filter_json else None
         ),
+        # LRA Patch 12: LONGSHORT fields — None for existing strategies
+        ticker_classification=(
+            json.loads(db_obj.ticker_classification)
+            if db_obj.ticker_classification else None
+        ),
+        pairing_entry_rules=(
+            json.loads(db_obj.pairing_entry_rules)
+            if db_obj.pairing_entry_rules else None
+        ),
+        pairing_exit_rules=(
+            json.loads(db_obj.pairing_exit_rules)
+            if db_obj.pairing_exit_rules else None
+        ),
+        sizing_policy=(
+            json.loads(db_obj.sizing_policy)
+            if db_obj.sizing_policy else None
+        ),
+        pair_exit_policy=(
+            json.loads(db_obj.pair_exit_policy)
+            if db_obj.pair_exit_policy else None
+        ),
+        # LRA Patch 34: per-leg entry rule trees
+        entry_rules_tree_long=(
+            json.loads(db_obj.entry_rules_tree_long)
+            if db_obj.entry_rules_tree_long else None
+        ),
+        entry_rules_tree_short=(
+            json.loads(db_obj.entry_rules_tree_short)
+            if db_obj.entry_rules_tree_short else None
+        ),
     )
 
 
@@ -263,8 +298,45 @@ async def run_backtest(strategy_data: StrategyRequest):
 
 # ── Equity & performance data ─────────────────────────────────────────────────
 
+# --- Patch 10: benchmark overlay support (index compare on equity chart) ---
+def _benchmark_index_folder() -> str:
+    """Shared folder of daily_closes_{key}.csv produced by generate_index_prices.py."""
+    from app.constants.PricePath import PricePath
+    return PricePath.index_path
+
+
+def list_available_benchmarks() -> List[Dict[str, str]]:
+    """Discover index benchmarks on disk: daily_closes_{key}.csv -> {key, label}."""
+    import glob
+    folder = _benchmark_index_folder()
+    out: List[Dict[str, str]] = []
+    prefix, suffix = "daily_closes_", ".csv"
+    for path in sorted(glob.glob(os.path.join(folder, prefix + "*" + suffix))):
+        key = os.path.basename(path)[len(prefix):-len(suffix)]
+        if key and key != "spy_close_0":
+            out.append({"key": key, "label": key.upper()})
+    return out
+
+
+def _load_benchmark_closes(key: str) -> Optional[pd.Series]:
+    """Load one index's daily closes as a date-indexed float Series, or None."""
+    path = os.path.join(_benchmark_index_folder(), f"daily_closes_{key}.csv")
+    if not os.path.exists(path):
+        return None
+    s = pd.read_csv(path, parse_dates=["Date"], index_col="Date")
+    col = key if key in s.columns else s.columns[0]
+    return pd.to_numeric(s[col], errors="coerce").dropna().sort_index()
+
+
+@router.get("/benchmarks")
+def get_benchmarks():
+    """Index benchmarks available for the equity-compare overlay."""
+    return list_available_benchmarks()
+# --- end Patch 10 ---
+
+
 @router.get("/{strategy_id}/equity")
-def get_equity(strategy_id: int, db: Session = Depends(get_db)):
+def get_equity(strategy_id: int, benchmark: Optional[str] = Query(None), db: Session = Depends(get_db)):
     """Return Plotly-compatible equity + drawdown + utility chart JSON."""
     strategy = db.query(StrategyBucket).filter(
         StrategyBucket.id == strategy_id
@@ -320,6 +392,24 @@ def get_equity(strategy_id: int, db: Session = Depends(get_db)):
         },
     ]
 
+    # --- Patch 11: optional benchmark overlay (rebased to starting capital) ---
+    if benchmark:
+        bench = _load_benchmark_closes(benchmark)
+        if bench is not None and not bench.empty:
+            aligned = bench.reindex(df.index, method="ffill").bfill()
+            base = aligned.iloc[0]
+            if base and base > 0:
+                bench_pnl = (aligned / base - 1.0) * capital_offset
+                data.append({
+                    "x": x_dates, "y": bench_pnl.round(2).tolist(),
+                    "type": "scatter", "mode": "lines",
+                    "name": f"{benchmark.upper()} (buy & hold)",
+                    "line": {"color": "#2563eb", "width": 2, "dash": "dot"},
+                    "hovertemplate": f"{benchmark.upper()}: %{{y:,.0f}}<br>Date: %{{x|%Y-%m-%d}}<extra></extra>",
+                    "xaxis": "x", "yaxis": "y",
+                })
+    # --- end Patch 11 ---
+
     layout = {
         "title": f"Equity Curve — strategy {strategy_id}",
         "height": 800,
@@ -338,6 +428,131 @@ def get_equity(strategy_id: int, db: Session = Depends(get_db)):
 
     return json.loads(json.dumps({"data": data, "layout": layout}, cls=PlotlyJSONEncoder))
 
+    # ── Patch 50: utility distribution (slots + capital deployed, % of days) ───────
+@router.get("/{strategy_id}/utility-distribution")
+def get_utility_distribution(strategy_id: int, db: Session = Depends(get_db)):
+    """Distribution of end-of-day utility slots and the matching capital
+    deployed, as a % of all trading days. Reads the same Equity.json the
+    equity chart uses (dayEndUtility / dayEndUtilityValue) — no engine change.
+    The £-per-slot unit is derived from the data, so it generalises to any
+    slot count."""
+    strategy = db.query(StrategyBucket).filter(
+        StrategyBucket.id == strategy_id
+    ).first()
+    if not strategy:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+
+    file_path = f"{BASE_OUTPUT_DIR}/{strategy.name}/output/Equity.json"
+    try:
+        df = pd.read_json(file_path).T
+    except Exception:
+        raise HTTPException(status_code=404, detail="Equity file not found")
+
+    if "dayEndUtility" not in df.columns:
+        raise HTTPException(
+            status_code=404,
+            detail="Equity.json has no dayEndUtility column",
+        )
+
+    util = pd.to_numeric(df["dayEndUtility"], errors="coerce").dropna()
+    util = util.round().astype(int)
+    total = int(len(util))
+    if total == 0:
+        raise HTTPException(status_code=404, detail="No utility data available")
+
+    max_slot = int(util.max())
+    levels = list(range(0, max_slot + 1))
+    counts = util.value_counts().reindex(levels, fill_value=0)
+    pct = (counts / total * 100.0).round(1)
+
+    # £-per-slot unit from the data (value / slots is constant where slots > 0).
+    nz = util > 0
+    unit = 0.0
+    if "dayEndUtilityValue" in df.columns and bool(nz.any()):
+        val = pd.to_numeric(df["dayEndUtilityValue"], errors="coerce").reindex(util.index)
+        ratio = (val[nz] / util[nz]).median()
+        unit = float(ratio) if pd.notna(ratio) else 0.0
+
+    slots_x = [f"{k} slots" for k in levels]
+    cap_x = [f"\u00A3{round(k * unit):,.0f}" for k in levels]
+    y_vals = pct.tolist()
+    labels = [f"{v:.1f}%" for v in y_vals]
+
+    data = [
+        {
+            "x": slots_x, "y": y_vals, "type": "bar",
+            "marker": {"color": "#FFA15A"}, "name": "Utility slots",
+            "text": labels, "textposition": "outside", "cliponaxis": False,
+            "hovertemplate": "%{x}<br>%{y:.1f}% of days<extra></extra>",
+            "xaxis": "x", "yaxis": "y",
+        },
+        {
+            "x": cap_x, "y": y_vals, "type": "bar",
+            "marker": {"color": "#19D3F3"}, "name": "Capital value",
+            "text": labels, "textposition": "outside", "cliponaxis": False,
+            "hovertemplate": "%{x}<br>%{y:.1f}% of days<extra></extra>",
+            "xaxis": "x2", "yaxis": "y2",
+        },
+    ]
+
+    y_max = (max(y_vals) if y_vals else 0) * 1.15 + 1
+
+    layout = {
+        "showlegend": False,
+        "height": 420,
+        "margin": {"t": 50, "b": 70, "l": 55, "r": 20},
+        "plot_bgcolor": "white",
+        "paper_bgcolor": "white",
+        "font": {"family": "Inter, sans-serif", "size": 12, "color": "#333"},
+        "annotations": [
+            {"text": "Utility slots distribution", "showarrow": False,
+             "x": 0.21, "y": 1.12, "xref": "paper", "yref": "paper",
+             "font": {"size": 14, "color": "#111827"}},
+            {"text": "Capital value distribution", "showarrow": False,
+             "x": 0.79, "y": 1.12, "xref": "paper", "yref": "paper",
+             "font": {"size": 14, "color": "#111827"}},
+        ],
+        "xaxis": {"domain": [0, 0.45], "tickangle": 0},
+        "xaxis2": {"domain": [0.55, 1], "tickangle": -35},
+        "yaxis": {"title": "% of days", "range": [0, y_max],
+                  "ticksuffix": "%", "gridcolor": "rgba(0,0,0,0.06)"},
+        "yaxis2": {"range": [0, y_max], "ticksuffix": "%",
+                   "gridcolor": "rgba(0,0,0,0.06)"},
+    }
+
+    cap_series = (
+        pd.to_numeric(df["dayEndUtilityValue"], errors="coerce").reindex(util.index)
+        if "dayEndUtilityValue" in df.columns else None
+    )
+
+    def _avg_block(slots_s):
+        avg_slots = float(slots_s.mean())
+        cap = (float(cap_series.reindex(slots_s.index).mean())
+               if cap_series is not None else avg_slots * unit)
+        return {
+            "avg_slots": round(avg_slots, 2),
+            "util_pct": round(avg_slots / max_slot * 100.0, 1) if max_slot else 0.0,
+            "avg_capital": round(cap),
+            "days": int(len(slots_s)),
+        }
+
+    yr_ser = pd.Series(pd.to_datetime(util.index, errors="coerce").year, index=util.index)
+    averages = {
+        "max_slots": max_slot,
+        "overall": _avg_block(util),
+        "by_year": [
+            {"year": int(yr), **_avg_block(util[yr_ser == yr])}
+            for yr in sorted(set(int(y) for y in yr_ser.dropna()))
+        ],
+    }
+    # ── end Patch 51 ───────────────────────────────────────────────────────────────
+
+    return json.loads(json.dumps(
+        {"data": data, "layout": layout, "averages": averages},
+        cls=PlotlyJSONEncoder,
+    ))
+
+    # ── end Patch 50 ───────────────────────────────────────────────────────────────
 
 @router.get("/{strategy_id}/performance", response_model=PerformanceMetrics)
 def get_performance(strategy_id: int, db: Session = Depends(get_db)):
@@ -421,8 +636,15 @@ def download_input_file(
     if "/" in filename or "\\" in filename or ".." in filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
 
+    strategy = db.query(StrategyBucket).filter(
+        StrategyBucket.id == strategy_id
+    ).first()
+    if not strategy:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+
+    universe = strategy.regimes[0].universe if strategy.regimes else "sp500"
     file_path = os.path.join(
-        f"{BASE_OUTPUT_DIR}/{system_name}/input/spy", filename
+        f"{BASE_OUTPUT_DIR}/{system_name}/input/{universe}", filename
     )
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail=f"File not found: {filename}")

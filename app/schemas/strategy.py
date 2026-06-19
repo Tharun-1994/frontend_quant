@@ -114,6 +114,9 @@ class MarketRegimeBase(BaseModel):
 
     stoploss_timing: Optional[str] = None
     takeprofit_timing: Optional[str] = None
+    # Patch 72c: PORTFOLIO drawdown anchor — required when stoploss_type==PORTFOLIO.
+    # Defaults to PEAK at the save layer; null when stoploss_type != PORTFOLIO.
+    portfolio_stoploss_anchor: Optional[str] = None
     atr_lookback_stp: Optional[int] = None
     atr_lookback_tp: Optional[int] = None
 
@@ -129,8 +132,19 @@ class MarketRegimeBase(BaseModel):
     capital: Optional[float] = None
     slots: Optional[int] = None
 
+    # Patch 49: per-regime live sizing. Backfilled from strategy.production_capital
+    # by migrate_production_capital_to_regime. payload_builder overrides
+    # regime.capital with this value for execution; backtest ignores it.
+    production_capital: Optional[float] = None
+
+    # Spec A3: How many extra ranked candidates (beyond `slots`) to persist
+    # as the substitute pool each night. Default 20. 0 disables substitution
+    # on this regime. SignalEngine reads this when building the pool the
+    # trader can promote to active via overlay-apply.
+    substitute_pool_size: Optional[int] = 20
+
     created_at: Optional[datetime] = None
-    max_time:Optional[int] = None
+    max_time: Optional[int] = None
 
     banned_months: Optional[List[int]] = []  # parsed as list in Python
     market_trend_rules_labels : Optional[str] = None  # JSON string or comma list of labels
@@ -156,6 +170,20 @@ class MarketRegimeBase(BaseModel):
     tdom_filters: Optional[List[TdomFilter]] = []  # dynamic TDOM calendar filter rules
     vol_filter: Optional[VolFilter] = None          # dynamic vol/turnover filter
 
+    # LRA Patch 12: LONGSHORT system_type fields. All optional, default None.
+    # Structured sub-types may be added in later patches; for now accept any dict.
+    ticker_classification: Optional[Dict[str, Any]] = None
+    pairing_entry_rules:   Optional[Dict[str, Any]] = None
+    pairing_exit_rules:    Optional[Dict[str, Any]] = None
+    sizing_policy:         Optional[Dict[str, Any]] = None
+    pair_exit_policy:      Optional[Dict[str, Any]] = None
+
+    # LRA Patch 34: per-leg entry rule trees consumed by the engine's
+    # runBacktestLongShortSimpleV2 evaluator (Patch 28). Free-form dicts —
+    # the engine validates the tree shape at evaluation time.
+    entry_rules_tree_long:  Optional[Dict[str, Any]] = None
+    entry_rules_tree_short: Optional[Dict[str, Any]] = None
+
     def to_dict(self):
         return jsonable_encoder(self)
 
@@ -177,6 +205,15 @@ class StrategyRequest(BaseModel):
     system_type:str
 
     market_regime_type: Optional[str] = None
+
+    # Spec A3: live execution config. Both optional so existing
+    # backtest-only strategies validate without disturbance.
+    # production_capital is the live sizing knob; NULL = strategy not yet live.
+    # execution_enabled is the per-strategy kill switch; default FALSE.
+    # Flipping execution_enabled=TRUE requires production_capital > 0
+    # (validated frontend and again in the route).
+    production_capital: Optional[float] = None
+    execution_enabled: Optional[bool] = False
 
     regimes: List[MarketRegimeBase] = []
 

@@ -26,6 +26,13 @@ class UniverseSpec:
     price_adjust: str = 'TOTALRETURN'
     padding: str = 'NONE'
     fields: list = None     # None -> PriceProvider.DEFAULT_FIELDS
+    # LRA Patch 14: synthetic-ticker hooks for LONG_SHORT universes.
+    # synthetics:          synthetic symbols to compute. Looked up in the
+    #                      synthetic_tickers DB table. None or [] -> skip.
+    # drop_source_tickers: source tickers to remove from the dataset AFTER
+    #                      synthetics are computed (e.g. ['CHFUSD','USDAUD'] for LRA).
+    synthetics: list = None
+    drop_source_tickers: list = None
 
 
 # Maintained Liquid 500 membership file. If your pipeline keeps a separate
@@ -38,9 +45,22 @@ LIQUID_500_CSV = (
 REGISTRY = [
     # UniverseSpec('liquid500',   'Liquid_500',   dt.date(1998, 1, 28), liquid_500_csv=LIQUID_500_CSV),
     # UniverseSpec('russell3000', 'Russell 3000', dt.date(2000, 6, 29)),
-    # UniverseSpec('sp500',       'S&P 500',      dt.date(1998, 1, 28)),
-    # UniverseSpec('spy',         ['SPY'],        dt.date(1998, 1, 28)),
+    UniverseSpec('sp500',       'S&P 500',      dt.date(1998, 1, 28)),
+    UniverseSpec('spy',         ['SPY'],        dt.date(1998, 1, 28)),
     # UniverseSpec('index',     ['$SPX', '$RUI', '$RUT'], dt.date(1998, 1, 28)),
     # UniverseSpec('sp100', 'S&P 100', dt.date(1998, 1, 28))
-    UniverseSpec('nasdaq100', 'Nasdaq 100', dt.date(1998, 1, 28))
+    # UniverseSpec('nasdaq100', 'Nasdaq 100', dt.date(1998, 1, 28))
+
+    # LRA Patch 14: LONG_SHORT universe — 14 tradable tickers. CHFAUD is synthesized
+    # from CHFUSD * USDAUD; sources are dropped after compute (Patch 15 hook).
+    # Uncomment to enable the next pipeline run.
+    # UniverseSpec(
+    #     slug='lra_14',
+    #     universe=['EEM', 'EFA', 'SPY', 'IWM', 'QQQ', 'VNQ', 'GLD', 'TLT', 'IEF',
+    #               'AGG', 'LQD', 'CHFUSD', 'USDAUD', 'UUP', 'RINF'],
+    #     start_date=dt.date(2003, 1, 1),
+    #     synthetics=['CHFAUD'],
+    #     drop_source_tickers=['CHFUSD', 'USDAUD'],
+    # ),
 ]
+

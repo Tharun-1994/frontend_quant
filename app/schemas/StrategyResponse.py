@@ -16,6 +16,10 @@ class StrategyResponse(BaseModel):
     min_quantity: Optional[float] = None
     system_type: Optional[str] = None
     market_regime_type: Optional[str] = None
+    execution_enabled: Optional[bool] = False
+
+    class Config:
+        from_attributes = True
 
 
 

@@ -60,14 +60,14 @@ INDEX_REGISTRY = {
         'start_date'  : '1998-01-01',
         'description' : 'CBOE Volatility Index (VIX)',
     },
-
-    'spxmcsum': {
-        'symbol'      : '#SPXMCSUM',
-        'adjustment'  : nd.StockPriceAdjustmentType.TOTALRETURN,
-        'padding'     : nd.PaddingType.NONE,
-        'start_date'  : '1998-01-01',
-        'description' : 'S&P 500 McClellan Summation Index',
-    },
+    #
+    # 'spxmcsum': {
+    #     'symbol'      : '#SPXMCSUM',
+    #     'adjustment'  : nd.StockPriceAdjustmentType.TOTALRETURN,
+    #     'padding'     : nd.PaddingType.NONE,
+    #     'start_date'  : '1998-01-01',
+    #     'description' : 'S&P 500 McClellan Summation Index',
+    # },
 
     # ── Add more below as needed ──────────────────────────────────────────────
     # 'gld': {
@@ -77,13 +77,13 @@ INDEX_REGISTRY = {
     #     'start_date'  : '2004-01-01',
     #     'description' : 'Gold ETF (GLD)',
     # },
-    # 'qqq': {
-    #     'symbol'      : 'QQQ',
-    #     'adjustment'  : nd.StockPriceAdjustmentType.TOTALRETURN,
-    #     'padding'     : nd.PaddingType.NONE,
-    #     'start_date'  : '1999-01-01',
-    #     'description' : 'Nasdaq-100 ETF (QQQ)',
-    # },
+    'qqq': {
+        'symbol'      : 'QQQ',
+        'adjustment'  : nd.StockPriceAdjustmentType.TOTALRETURN,
+        'padding'     : nd.PaddingType.NONE,
+        'start_date'  : '1999-01-01',
+        'description' : 'Nasdaq-100 ETF (QQQ)',
+    },
 
 }
 

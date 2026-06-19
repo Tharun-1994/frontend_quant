@@ -8,10 +8,11 @@ from app.schemas.strategy import MarketRegimeBase
 import pandas as pd
 from app.schemas.strategy import Rule
 
+
 class GeneratePricesIndicators:
     @staticmethod
     def call_indicator(name: str, **kwargs):
-        if name == 'ADX' :
+        if name == 'ADX':
             name = 'ADX_1'
         func = INDICATOR_REGISTRY.get(name)
         if not func:
@@ -41,6 +42,25 @@ class GeneratePricesIndicators:
                     params=r.get("params") or None,
                     regime_ticker=r.get("regime_ticker") or "",
                 )
+            return
+
+        # LRA Patch 44 — LRA-shaped leaf: indicator field directly on node, no "rule" wrapper.
+        # Identified by: has 'indicator' field and is not a 'group'.
+        if "indicator" in node and node.get("type") != "group":
+            yield Rule(
+                indicator=node.get("indicator", ""),
+                lookback=int(node.get("lookback") or 0),
+                operator=node.get("operator") or "",
+                value=float(node.get("value") or 0),
+                connector="",
+                label=None,
+                value_type=None,
+                value_indicator=node.get("value_indicator") or "",
+                value_lookback=0,
+                value_range_percent=0,
+                params=node.get("params") or None,
+                regime_ticker="",
+            )
             return
 
         for c in node.get("children") or []:
@@ -354,8 +374,14 @@ class GeneratePricesIndicators:
                 result = GeneratePricesIndicators.call_indicator(
                     FUNCTION_MAPPER['ibs'],
                     Closes=price_data[f'{rebalance}_closes'],
-                    Highs =price_data[f'{rebalance}_highs'],
-                    Lows  =price_data[f'{rebalance}_lows'])
+                    Highs=price_data[f'{rebalance}_highs'],
+                    Lows=price_data[f'{rebalance}_lows'])
+            elif rule.indicator == 'daily_range_pct':
+                # LRA Patch 16: Daily Range % = (high - low) / low * 100
+                result = GeneratePricesIndicators.call_indicator(
+                    FUNCTION_MAPPER['daily_range_pct'],
+                    Highs=price_data[f'{rebalance}_highs'],
+                    Lows=price_data[f'{rebalance}_lows'])
             elif rule.indicator == 'consec_down':
                 # Pure price-pattern derived series — ignores lookback param
                 result = GeneratePricesIndicators.call_indicator(
@@ -422,8 +448,9 @@ class GeneratePricesIndicators:
                 vol = int(p.get("vol_lookback", 252))
                 skip = int(p.get("skip_days", 0))
                 result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER['sharpe'],
-                                        prices=price_data[f'{rebalance}_closes'], momentum_lookback=mom,
-                                        vol_lookback=vol, skip_days=skip)
+                                                                 prices=price_data[f'{rebalance}_closes'],
+                                                                 momentum_lookback=mom,
+                                                                 vol_lookback=vol, skip_days=skip)
                 key = f'{rule.indicator}_{mom}_{vol}_{skip}'
 
             elif rule.indicator == 'roc':
@@ -589,33 +616,122 @@ class GeneratePricesIndicators:
         GeneratePricesIndicators._compute_rule_indicators(
             [ranking_rule], price_data, rebalance, univ, indicator_set)
 
-
     @staticmethod
-    def generate(marketRegime : MarketRegimeBase,strategy: StrategyBucket):
+    def generate(marketRegime: MarketRegimeBase, strategy: StrategyBucket,
+                 production: bool = False, run_date=None,
+                 start_date=None, lookback_buffer_days: int = 500,
+                 test_mode: bool = False):
+        """Compute indicator parquets for one (regime, strategy) pair.
+
+        C1 Patch 3: when production=True, the final uploadCommonPath call
+        writes to the universe-shared exec_data folder (date-stamped by
+        run_date) instead of the per-strategy backtest_data folder.
+
+        Patch 21: when start_date is supplied (execution mode), price_data
+        is sliced to [start_date - lookback_buffer_days, ...] before any
+        indicator computation. This is the Python half of the execution
+        start floor agreed in the design: payload_builder.EXECUTION_START_DATE
+        sets the engine's day-loop floor; this slice cuts what gets computed
+        in the first place. Backtest mode (start_date=None) is unchanged —
+        existing callers (notably app/routes/strategies.py:297) get the
+        legacy full-history path.
+
+        Args:
+            marketRegime: a MarketRegime with universe + rule trees.
+            strategy: the StrategyBucket containing rebalance + name.
+            production: when True, write parquets to exec_data path.
+            run_date: data date for the exec_data folder name. Defaults
+                to today when None. Ignored when production=False.
+            start_date: execution-mode lower bound (date). When set, price
+                history before (start_date - lookback_buffer_days) is
+                discarded before indicator computation. None = full
+                history (backtest path).
+            lookback_buffer_days: warmup buffer in calendar days. 500
+                ≈ 340 trading days, comfortable for all current rules
+                including SMA-252/HV-252. Ignored when start_date is None.
+        """
         for univ in UNIVERSES.keys():
             if marketRegime.universe.lower() == univ.lower():
 
-                if univ == 'sp500':
-                    loader = PriceDataLoader(PricePath.sp500base_path)
-                elif univ == 'sp100':
-                    loader = PriceDataLoader(PricePath.sp100base_path)
-                elif univ == 'nasdaq100':
-                    loader = PriceDataLoader(PricePath.nasdaq100base_path)
-                elif univ == 'liquid500':
-                    loader = PriceDataLoader(PricePath.liquid500base_path)
-                elif univ == 'russell3000':
-                    loader = PriceDataLoader(PricePath.russell3000base_path)
-                elif univ.lower() == 'SPY'.lower():
-                    loader = PriceDataLoader(PricePath.spy_path)
+                # Patch 22: route to live (nightly-refreshed) folder when in
+                # execution mode (production=True); fall back to static
+                # backtest folder otherwise. Backtests must see frozen
+                # historical data — the manager-demo tradelists were
+                # generated against it and need to be reproducible.
+                if production and not test_mode:
+                    # Normal nightly: read from live folder (~5yr rolling window)
+                    if univ == 'sp500':
+                        loader = PriceDataLoader(PricePath.sp500_live_base_path)
+                    elif univ.lower() == 'spy':
+                        loader = PriceDataLoader(PricePath.spy_live_path)
+                    else:
+                        raise ValueError(
+                            f"Universe '{univ}' has no live path configured. "
+                            f"Add it to PricePath + live_universe_registry "
+                            f"before enabling a strategy on this universe."
+                        )
+                elif test_mode:
+                    # Test mode: read from full historical folder so any
+                    # historical date is reachable. Output still goes to
+                    # exec_data/{YYYYMMDD} because production=True.
+                    if univ == 'sp500':
+                        loader = PriceDataLoader(PricePath.sp500base_path)
+                    elif univ.lower() == 'spy':
+                        loader = PriceDataLoader(PricePath.spy_path)
+                    else:
+                        raise ValueError(f"Unknown universe for test_mode: {univ}")
                 else:
-                    raise ValueError(f"Unknown universe: {univ}")
+                    if univ == 'sp500':
+                        loader = PriceDataLoader(PricePath.sp500base_path)
+                    elif univ == 'sp100':
+                        loader = PriceDataLoader(PricePath.sp100base_path)
+                    elif univ == 'nasdaq100':
+                        loader = PriceDataLoader(PricePath.nasdaq100base_path)
+                    elif univ == 'liquid500':
+                        loader = PriceDataLoader(PricePath.liquid500base_path)
+                    elif univ == 'russell3000':
+                        loader = PriceDataLoader(PricePath.russell3000base_path)
+                    elif univ == 'lra14':  # LRA Patch 44
+                        loader = PriceDataLoader(PricePath.lra_14base_path)
+                    elif univ.lower() == 'SPY'.lower():
+                        loader = PriceDataLoader(PricePath.spy_path)
+                    else:
+                        raise ValueError(f"Unknown universe: {univ}")
 
+                price_data = loader.load_all(rebalance=strategy.rebalance, universe=univ)
 
-
-                price_data = loader.load_all(rebalance=strategy.rebalance,universe=univ)
+                # Patch 21: execution-mode slice. Before this, price_data carried
+                # 1998 → today (28+ years × ~600 tickers per indicator). Sliced
+                # to [start_date - lookback_buffer_days, ...] every downstream
+                # indicator compute runs over ~4 years instead. Backtest mode
+                # (start_date=None) skips the slice entirely.
+                if start_date is not None:
+                    import datetime as _dt_p21
+                    if isinstance(start_date, str):
+                        _start = _dt_p21.date.fromisoformat(start_date)
+                    elif isinstance(start_date, _dt_p21.datetime):
+                        _start = start_date.date()
+                    else:
+                        _start = start_date  # already a date
+                    _cutoff = pd.Timestamp(_start - _dt_p21.timedelta(days=lookback_buffer_days))
+                    _kept = 0
+                    _dropped = 0
+                    for _k, _df in list(price_data.items()):
+                        # Slice only DataFrames/Series whose index is datetime-based.
+                        # Non-temporal entries (sector mappings, scalars) untouched.
+                        if hasattr(_df, 'index') and isinstance(_df.index, pd.DatetimeIndex):
+                            _before = len(_df)
+                            _sliced = _df[_df.index >= _cutoff]
+                            price_data[_k] = _sliced
+                            _kept += len(_sliced)
+                            _dropped += (_before - len(_sliced))
+                    print(f'[GeneratePricesIndicators] Patch 21 slice: cutoff={_cutoff.date()} '
+                          f'kept_rows={_kept} dropped_rows={_dropped} '
+                          f'(start_date={_start}, buffer={lookback_buffer_days}d)')
 
                 if univ.lower() != 'spy':
-                    date_to_active_tickers = price_data[f'{univ}_universe'].apply(lambda row: row[row == 1].index.tolist(), axis=1)
+                    date_to_active_tickers = price_data[f'{univ}_universe'].apply(
+                        lambda row: row[row == 1].index.tolist(), axis=1)
                     df_out = date_to_active_tickers.to_frame(name="active_tickers")
                     price_data[f'{univ}_universe'] = df_out["active_tickers"].apply(lambda x: ",".join(x)).to_frame()
 
@@ -648,43 +764,54 @@ class GeneratePricesIndicators:
                 GeneratePricesIndicators._compute_atr_limits(marketRegime, price_data, strategy.rebalance,
                                                              indictor_Set)
 
-
                 entry_rules = list(GeneratePricesIndicators.iter_rules_from_tree(marketRegime.entry_rules_tree))
                 exit_rules = list(GeneratePricesIndicators.iter_rules_from_tree(marketRegime.exit_rules_tree))
-                market_trend_rules = list(GeneratePricesIndicators.iter_rules_from_tree(marketRegime.market_trend_rules_tree))
+                market_trend_rules = list(
+                    GeneratePricesIndicators.iter_rules_from_tree(marketRegime.market_trend_rules_tree))
+
+                # LRA Patch 44 — also iterate the LRA leg trees so their indicators
+                # (ibs, daily_range_pct, rsi) get generated as parquets. iter_rules_from_tree
+                # was extended above to recognize LRA-shaped leaves; the existing rules
+                # list is augmented in-place so downstream _compute_rule_indicators picks them up.
+                lra_long = list(GeneratePricesIndicators.iter_rules_from_tree(
+                    getattr(marketRegime, "entry_rules_tree_long", None)))
+                lra_short = list(GeneratePricesIndicators.iter_rules_from_tree(
+                    getattr(marketRegime, "entry_rules_tree_short", None)))
+                entry_rules.extend(lra_long)
+                entry_rules.extend(lra_short)
 
                 freeze_rules = list(
                     GeneratePricesIndicators.iter_rules_from_tree(getattr(marketRegime, "freeze_rules_tree", None)))
                 resume_rules = list(
                     GeneratePricesIndicators.iter_rules_from_tree(getattr(marketRegime, "resume_rules_tree", None)))
 
-                #Entry Indicator Rules
+                # Entry Indicator Rules
                 GeneratePricesIndicators._compute_rule_indicators(entry_rules, price_data, strategy.rebalance, univ,
                                                                   indictor_Set)
-                #Entry Value Indicators Rules
+                # Entry Value Indicators Rules
                 GeneratePricesIndicators._compute_value_indicators(entry_rules, price_data, strategy.rebalance, univ,
                                                                    indictor_Set)
-                #Exit Indicator Rules
+                # Exit Indicator Rules
                 GeneratePricesIndicators._compute_rule_indicators(exit_rules, price_data, strategy.rebalance, univ,
                                                                   indictor_Set)
 
-                #Exit Value Indicator Value
+                # Exit Value Indicator Value
                 GeneratePricesIndicators._compute_value_indicators(exit_rules, price_data, strategy.rebalance, univ,
                                                                    indictor_Set)
-
 
                 # Ranking Indicator Generation
                 GeneratePricesIndicators._compute_ranking(marketRegime, price_data, strategy.rebalance, univ,
                                                           indictor_Set)
 
-
                 # Market Trend Rule  Generation
                 GeneratePricesIndicators._compute_market_trend_rules(market_trend_rules, marketRegime, price_data,
-                                                                     strategy.rebalance, univ, indicator_set=indictor_Set)
+                                                                     strategy.rebalance, univ,
+                                                                     indicator_set=indictor_Set)
 
                 # Market Trend Value Indicators
                 GeneratePricesIndicators._compute_market_trend_value_indicators(market_trend_rules, price_data,
-                                                                                strategy.rebalance, univ, indicator_set= indictor_Set)
+                                                                                strategy.rebalance, univ,
+                                                                                indicator_set=indictor_Set)
 
                 # Volatility-cut (freeze/resume) — dedicated, separate from market-trend.
                 # Volatility-cut (freeze/resume) — dedicated, separate from market-trend.
@@ -699,8 +826,12 @@ class GeneratePricesIndicators:
                     getattr(marketRegime, "safety_nets", None),
                     price_data, strategy.rebalance, indictor_Set)
 
-                # Trading Days
-                GeneratePricesIndicators._compute_trading_dates(price_data, strategy.rebalance, univ, strategy, loader)
+                # Trading Days — Patch 50: pass run_date in production mode so
+                # trading_dates extends through the live data date, not the
+                # backtest end stored in strategy.end_date.
+                GeneratePricesIndicators._compute_trading_dates(
+                    price_data, strategy.rebalance, univ, strategy, loader,
+                    run_date=run_date if production else None)
 
                 # Sector Mapping (for sector-based ranking filter)
                 if marketRegime.sector_level and marketRegime.sector_limit:
@@ -712,22 +843,48 @@ class GeneratePricesIndicators:
                 # avg_turnover = rolling(200).mean(closes   * volumes)
                 # Matches Python crdt_strat_1.create_strategy_data().
                 if getattr(marketRegime, "vol_filter", None) and getattr(marketRegime.vol_filter, "enabled", False):
-                    _rebalance  = strategy.rebalance
-                    _turnovers  = price_data.get(f'{_rebalance}_turnovers')
-                    _unadj      = price_data.get(f'{_rebalance}_unadjusted_closes')
-                    _closes     = price_data.get(f'{_rebalance}_closes')
-                    _volumes    = price_data.get(f'{_rebalance}_volumes')
+                    _rebalance = strategy.rebalance
+                    _turnovers = price_data.get(f'{_rebalance}_turnovers')
+                    _unadj = price_data.get(f'{_rebalance}_unadjusted_closes')
+                    _closes = price_data.get(f'{_rebalance}_closes')
+                    _volumes = price_data.get(f'{_rebalance}_volumes')
                     if _turnovers is not None and _unadj is not None:
                         unadj_vol = _turnovers / _unadj
                         price_data['avg_volume'] = unadj_vol.rolling(200).mean()
                     if _closes is not None and _volumes is not None:
                         price_data['avg_turnover'] = (_closes * _volumes).rolling(200).mean()
 
-                loader.uploadCommonPath(price_data=price_data,universe=univ,strategy_name = strategy.name)
+                # C1 Patch 3: forward production + run_date so the loader
+                # can branch to the exec_data folder. Backtest callers
+                # omit these args (defaults: production=False, run_date=None)
+                # and take the legacy backtest_data path — same as before.
+                loader.uploadCommonPath(
+                    price_data=price_data,
+                    universe=univ,
+                    strategy_name=strategy.name,
+                    production=production,
+                    run_date=run_date,
+                )
 
     @staticmethod
-    def _compute_trading_dates(price_data, rebalance, univ, strategy, loader):
-        """Compute all_dates and trading_dates."""
+    def _compute_trading_dates(price_data, rebalance, univ, strategy, loader, run_date=None):
+        """Compute all_dates and trading_dates.
+
+        Patch 50: in production mode (run_date is not None), use run_date as
+        the end_trading bound instead of strategy.end_date. strategy.end_date
+        in DB is the BACKTEST end date — often historical (PullBack: 2021-12-31).
+        Using it for live execution silently truncates trading_dates to the
+        backtest end, so the engine's lastBar lands on a stale historical
+        date instead of yesterday. The engine then ranks against ancient
+        price data and proposes tickers that were active back then — which
+        in Norgate's data model carry their POST-delisting names today
+        (e.g. CTRA was in the S&P 500 in 2021, so the column 'CTRA-202605'
+        has membership=1 on 2021-12-31 even though it delisted in 2026-05).
+
+        Backtest mode (run_date=None) keeps the original behavior: use
+        strategy.end_date verbatim. This preserves manager-demo
+        reproducibility against the frozen static parquets.
+        """
         if univ.lower() == 'spy':
             daily_closes = price_data['DAILY_spy'][['Close']]
             all_dates = price_data['DAILY_spy']['Close'].index
@@ -737,9 +894,12 @@ class GeneratePricesIndicators:
 
         price_data['all_dates'] = pd.DataFrame(data=all_dates, columns=['Date'])
 
+        # Patch 50: production mode → run_date; backtest mode → strategy.end_date
+        end_trading = run_date if run_date is not None else strategy.end_date
+
         trading_dates = loader.get_trading_dates(
             start_trading=strategy.start_date,
-            end_trading=strategy.end_date,
+            end_trading=end_trading,
             use_data=True,
             daily_closes=daily_closes,
             all_dates=all_dates,
