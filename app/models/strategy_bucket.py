@@ -40,5 +40,11 @@ class StrategyBucket(Base):
     last_capital_change_at = Column(DateTime, nullable=True)
     last_capital_change_by = Column(String(100), nullable=True)
 
+    # Short code used by the trader's substitution CSV (System column).
+    # e.g. 'M_SDEQ_52'. Nullable — set manually after strategy creation.
+    # Unique when set so CSV routing is unambiguous.
+    # Required when execution_enabled=True for combined CSV overlay to work.
+    system_code = Column(String(50), nullable=True, unique=True)
+
     # ── Relationships ─────────────────────────────────────────────────────────
     regimes = relationship("MarketRegime", back_populates="strategy")

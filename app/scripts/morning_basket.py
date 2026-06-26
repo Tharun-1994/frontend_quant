@@ -56,6 +56,19 @@ def main(argv: Optional[list[str]] = None) -> int:
         / trade_date.strftime('%Y%m%d')
     )
 
+    # Guard: if XLSX already exists for today (Vas used SubstitutionPage),
+    # skip the scheduled run entirely — no point regenerating the same file.
+    output_dir = Path(PricePath.backtestPath) / 'broker_output' / trade_date.strftime('%Y%m%d')
+    expected_xlsx = output_dir / f'M_Combined_{trade_date.strftime("%Y%m%d")}.xlsx'
+    # Guard: skip only if XLSX exists AND is non-empty (size > 5KB).
+    # An empty/corrupt XLSX (< 5KB) means a previous run failed mid-write —
+    # we should regenerate in that case.
+    if expected_xlsx.exists() and expected_xlsx.stat().st_size > 5000:
+        print(f'[morning_basket] XLSX already exists ({expected_xlsx.stat().st_size} bytes) at {expected_xlsx}')
+        print(f'[morning_basket] Skipping — basket already generated for today')
+        print(f'[morning_basket] ============================================')
+        return 0
+
     db = SessionLocal()
     n_overlay_failed = 0
     try:

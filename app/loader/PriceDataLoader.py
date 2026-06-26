@@ -149,7 +149,7 @@ class PriceDataLoader:
         return {'sector_mapping': df}
 
     def uploadCommonPath(self, price_data={}, universe="", strategy_name="",
-                         production=False, run_date=None):
+                         production=False, run_date=None, excluded_tickers=None):
         """Write computed parquets.
 
         C1 Patch 2: when production=True, writes to the universe-shared,
@@ -177,10 +177,17 @@ class PriceDataLoader:
             out_dir = PricePath.getBacktestInputPath(universe=universe, strategy_name=strategy_name)
 
         for k in price_data.keys():
+            df = price_data[k]
+            # Apply ticker exclusions — drop columns for excluded tickers.
+            # Covers both backtest (production=False) and execution (production=True).
+            if excluded_tickers and hasattr(df, 'columns'):
+                cols_to_drop = [c for c in excluded_tickers if c in df.columns]
+                if cols_to_drop:
+                    df = df.drop(columns=cols_to_drop)
             if 'universe' not in k and 'trading_dates' not in k and 'all_dates' not in k and 'sector_mapping' not in k:
                 if universe.lower() != 'spy':
-                    price_data[k] = price_data[k].astype("float32")
-            price_data[k].to_parquet(f'{out_dir}/{k}.parquet')
+                    df = df.astype("float32")
+            df.to_parquet(f'{out_dir}/{k}.parquet')
 
     def get_trading_dates(self, start_trading=None, end_trading=None,
                           use_data=True, daily_closes=pd.Series(), all_dates=[], max_lookback=255, rebalance='daily'):

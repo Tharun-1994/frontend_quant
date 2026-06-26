@@ -52,6 +52,10 @@ class SubstitutionOverride(Base):
     uploaded_at = Column(DateTime, server_default=func.now(), nullable=False)
     uploaded_by = Column(String(100), nullable=True)
 
+    # Free-text reason Vas provides per action in the substitution CSV.
+    # e.g. 'chart,size' | 'results' | 'news on drones'
+    reason_for_action = Column(String(500), nullable=True)
+
     def __repr__(self):
         return (f"<SubstitutionOverride(strategy={self.strategy_id}, "
                 f"date={self.override_date}, action='{self.action}', "

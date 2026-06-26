@@ -44,6 +44,8 @@ from app.services.position_manager.fill_resolver import (
     FillOutcome,
     resolve_exit_fills,
     ExitFillOutcome,
+    resolve_hypothetical_fills,
+    HypotheticalFillOutcome,
 )
 from app.services.position_manager.live_seed_builder import (
     build_live_holdings_seed,
@@ -53,6 +55,7 @@ from app.services.position_manager.payload_builder import (
 )
 from app.services.position_manager.exit_applier import apply_exits
 from app.services.position_manager.stop_updater import apply_stop_updates   # Patch 33
+from app.services.live_equity_writer import write_live_equity_snapshot
 from app.services.position_manager.proposed_inserter import (
     insert_proposed_rows,
 )
@@ -104,6 +107,7 @@ def run_position_manager(
         'proposed_deleted': 0,
         'active_regime_id': None,
         'exit_fills_resolved': 0,
+        'hypothetical_fills_resolved': 0,
         # Patch 70: PORTFOLIO trip tracking
         'execution_disabled': False,
         'execution_disable_reason': None,
@@ -155,6 +159,28 @@ def run_position_manager(
         )
         _apply_exit_fill_outcomes(db, exit_outcomes)
         summary['exit_fills_resolved'] = len(exit_outcomes)
+
+        # ────────── Step A.6 — hypothetical fills for SYSTEM rows ──────────
+        # Populates entry_price / exit_price / profit on SYSTEM-ledger rows
+        # (original tickers that Vas elided or substituted). These are shadow
+        # rows created by overlay_apply and carry the original symbol the engine
+        # picked. Writing hypothetical P&L enables future substitution analysis:
+        #   actual substitute profit  vs  hypothetical original profit.
+        # Runs cross-strategy (universe-wide parquets) — non-fatal if it fails.
+        try:
+            hyp_outcomes = resolve_hypothetical_fills(
+                db,
+                run_date=run_date,
+                data_root=data_root,
+                universe=universe,
+                rebalance=rebalance,
+            )
+            _apply_hypothetical_fill_outcomes(db, hyp_outcomes)
+            summary['hypothetical_fills_resolved'] = len(hyp_outcomes)
+        except Exception as e:
+            print(f'[runner] WARNING: hypothetical fill resolution failed '
+                  f'(non-fatal): {type(e).__name__}: {e}')
+            summary['hypothetical_fills_resolved'] = 0
 
         # ────────── Step B — engine call ──────────
         live_holdings = build_live_holdings_seed(db, strategy_id=strategy_id)
@@ -225,6 +251,26 @@ def run_position_manager(
         # ────────── Commit ──────────
         db.commit()
 
+        # ────────── Step E — live equity snapshot ───────────────────────
+        # Runs AFTER commit so a snapshot failure never rolls back PM work.
+        # Writes one LiveEquitySnapshot row for today's close prices.
+        try:
+            equity_result = write_live_equity_snapshot(
+                db=db,
+                strategy_id=strategy_id,
+                run_date=run_date,
+                data_root=data_root,
+                universe=universe,
+                rebalance=rebalance,
+            )
+            db.commit()
+            summary['equity_snapshot'] = equity_result
+        except Exception as e:
+            db.rollback()
+            print(f'[runner] WARNING: live equity snapshot failed (non-fatal): '
+                  f'{type(e).__name__}: {e}')
+            summary['equity_snapshot'] = None
+
         # Update eod_run_log to SUCCESS in a separate mini-transaction
         rows_affected = (
                 summary['fills_resolved'] + summary['fills_cancelled']
@@ -289,6 +335,35 @@ def _apply_fill_outcomes(db: Session, outcomes: list[FillOutcome], run_date: dat
             row.status        = 'CANCELLED'
             # entry_* columns stay NULL — order never filled
 
+    db.flush()
+
+
+def _apply_hypothetical_fill_outcomes(
+    db: Session,
+    outcomes: list[HypotheticalFillOutcome],
+) -> None:
+    """Apply hypothetical exit fill outcomes to SYSTEM-ledger rows.
+
+    Writes exit_price, profit, profit_pct, day_count and flips status
+    to 'EXITED' so the row is complete and queryable for analysis.
+    Entry-only updates (Case 1 in resolve_hypothetical_fills) are applied
+    directly to the ORM objects in resolve_hypothetical_fills — no separate
+    apply function needed for those.
+    """
+    for o in outcomes:
+        row = db.query(Tradelist).filter_by(id=o.row_id).first()
+        if row is None:
+            raise ValueError(
+                f'HypotheticalFillOutcome references tradelist id={o.row_id} '
+                f'but row not found.'
+            )
+        row.exit_price  = o.exit_price
+        row.profit      = o.profit
+        row.profit_pct  = o.profit_pct
+        row.day_count   = o.day_count
+        row.status      = 'EXITED'
+        print(f'[runner] hypothetical exit id={o.row_id} {row.symbol}: '
+              f'exit_price={o.exit_price:.4f} profit={o.profit:.2f} → EXITED')
     db.flush()
 
 

@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -35,6 +36,10 @@ from app.database import get_db
 from app.models.tradelist import Tradelist
 from app.models.strategy_bucket import StrategyBucket
 from app.models.market_regime import MarketRegime
+from openpyxl import Workbook
+from openpyxl.styles import Font
+from fastapi.responses import StreamingResponse
+import io
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/tradelist", tags=["tradelist"])
@@ -147,7 +152,7 @@ def list_execution_enabled_strategies(db: Session = Depends(get_db)):
     return [
         ExecutionEnabledStrategy(
             id=s.id,
-            name=s.name,
+            name=s.system_code,
             system_type=s.system_type or "",
             market_regime_type=s.market_regime_type or "",
             production_capital=(
@@ -363,10 +368,137 @@ def latest_basket_date(db: Session = Depends(get_db)):
         db.query(Tradelist.intended_trade_date)
         .filter(
             Tradelist.ledger == "TRADED",
-            Tradelist.status == "PROPOSED",
+            Tradelist.status.in_(["PROPOSED", "PENDING_FILL"]),
         )
         .order_by(Tradelist.intended_trade_date.desc())
         .limit(1)
         .scalar()
     )
     return {"trade_date": latest.isoformat() if latest else None}
+
+@router.get(
+    "/basket-xlsx/{trade_date}",
+    summary="Download M_Combined XLSX from disk (authoritative file for IBKR)",
+    response_class=Response,
+)
+def download_combined_basket_xlsx(
+    trade_date: date,
+    db: Session = Depends(get_db),
+):
+    """Serves the M_Combined_{YYYYMMDD}.xlsx written by broker_write.
+    This is the authoritative file — includes STP stop rows, exits and entries.
+    Returns 404 if broker_write has not been run for this date yet.
+    """
+    from fastapi.responses import FileResponse
+    from app.constants.PricePath import PricePath
+
+    file_path = (
+        Path(PricePath.backtestPath)
+        / 'broker_output'
+        / trade_date.strftime('%Y%m%d')
+        / f'M_Combined_{trade_date.strftime("%Y%m%d")}.xlsx'
+    )
+    if not file_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f'M_Combined XLSX not found for {trade_date}. '
+                   f'Run morning basket first (trigger from EOD Run History page).'
+        )
+    filename = f'M_Combined_{trade_date.strftime("%Y%m%d")}.xlsx'
+    return FileResponse(
+        path=str(file_path),
+        filename=filename,
+        media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+
+
+# ── latest-basket-date ────────────────────────────────────────────────────────
+
+# ── holdings-xlsx ─────────────────────────────────────────────────────────────
+
+@router.get(
+    "/holdings-xlsx",
+    summary="Download all LIVE positions across execution-enabled strategies as XLSX",
+)
+def download_holdings_xlsx(db: Session = Depends(get_db)):
+    """Returns M_Holdings_{today}.xlsx with all LIVE rows across all
+    execution-enabled strategies.
+
+    Columns: ticker, quantity, price (entry_price), trade_status,
+             strategy (system_code or name), entry_date
+
+    Matches legacy M_holdings_format_1_{YYYYMMDD}.xlsx format.
+    """
+    from datetime import date as _date
+    today = _date.today()
+
+    live_rows = (
+        db.query(Tradelist, StrategyBucket)
+        .join(StrategyBucket, Tradelist.strategy_id == StrategyBucket.id)
+        .filter(
+            Tradelist.ledger == 'TRADED',
+            Tradelist.status == 'LIVE',
+            StrategyBucket.execution_enabled == True,
+        )
+        .order_by(StrategyBucket.name, Tradelist.entry_date)
+        .all()
+    )
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Holdings'
+
+    headers = ['ticker', 'quantity', 'price', 'trade_status', 'strategy', 'entry_date']
+    ws.append(headers)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+
+    for tl, strat in live_rows:
+        # Use system_code as strategy label if set, else name
+        strategy_label = strat.system_code or strat.name
+        direction      = (tl.direction or 'LONG').lower()
+        ws.append([
+            tl.symbol,
+            int(tl.filled_qty or tl.intended_qty or 0),
+            float(tl.entry_price) if tl.entry_price else '',
+            direction,
+            strategy_label,
+            tl.entry_date.isoformat() if tl.entry_date else '',
+        ])
+
+    # Auto-size columns
+    for col in ws.columns:
+        max_len = max((len(str(c.value or '')) for c in col), default=10)
+        ws.column_dimensions[col[0].column_letter].width = max(12, min(30, max_len + 2))
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    filename = f'M_Holdings_{today.strftime("%Y%m%d")}.xlsx'
+    return StreamingResponse(
+        buf,
+        media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition': f'attachment; filename="{filename}"'},
+    )
+
+@router.get(
+    "/all-live-holdings",
+    response_model=list[TradelistRow],
+    summary="All LIVE rows across every execution-enabled strategy",
+)
+def get_all_live_holdings(db: Session = Depends(get_db)):
+    """Returns all LIVE tradelist rows across all execution-enabled strategies.
+    Used by the All Systems view in HoldingsAndTradesPage to show combined holdings."""
+    live_rows = (
+        db.query(Tradelist, StrategyBucket)
+        .join(StrategyBucket, Tradelist.strategy_id == StrategyBucket.id)
+        .filter(
+            Tradelist.ledger == 'TRADED',
+            Tradelist.status == 'LIVE',
+            StrategyBucket.execution_enabled == True,
+        )
+        .order_by(StrategyBucket.name, Tradelist.entry_date)
+        .all()
+    )
+    return [_row_to_response(tl, strat.name) for tl, strat in live_rows]

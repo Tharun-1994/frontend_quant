@@ -809,10 +809,14 @@ class IndicatorCalculator:
     @staticmethod
     @register
     def RollingVolatilityMedian(prices, vol_lookback=20, median_lookback=252):
-        """Rolling median of rolling-stddev — for relative-threshold safety nets.
-        Computes the rolling stddev first, then takes its rolling median.
-        Used by spy_volatility_pause safety net to determine 'normal' vol regime."""
-        vol = prices.pct_change().rolling(vol_lookback).std()
+        # Patch 75: ddof=0 to match RollingVolatilityUnshifted — the LHS vol the pause compares
+        # against. The gate is a RATIO test (vol > multiple * median); std(ddof=0) and std(ddof=1)
+        # differ only by a constant sqrt((n-1)/n) per window, which CANCELS in the ratio. So this
+        # makes the pause's suspend/resume decisions exactly match the PullBack Python (pandas
+        # .std()/ddof=1 on both sides) without touching the shared RollingVolatilityUnshifted
+        # (ddof=0, used by the unwired spy_volatility/L_SMR_STATIC net). RollingVolatilityMedian
+        # is pause-exclusive, so blast radius = the pause only.
+        vol = prices.pct_change().rolling(vol_lookback).std(ddof=0)
         return vol.rolling(median_lookback).median()
 
     @staticmethod

@@ -36,6 +36,7 @@ from app.models.eod_run_log import EodRunLog
 
 from app.models.strategy_bucket import StrategyBucket
 from app.loader.GeneratePricesIndicators import GeneratePricesIndicators
+from app.models.universe_ticker_exclusion import UniverseTickerExclusion
 from app.services.position_manager.payload_builder import EXECUTION_START_DATE
 # C1-fix-E (2026-06-12): GeneratePricesIndicators.generate() expects the
 # Pydantic MarketRegimeBase shape (parsed trees, vol_filter object, etc.),
@@ -144,6 +145,14 @@ class ExecDataRefreshService:
         # of which strategy requested it), so overwrites are content-identical.
         pairs_by_universe = defaultdict(list)
         filter_lc = {u.lower() for u in universe_filter} if universe_filter else None
+        excluded_tickers = {
+            row.ticker for row in
+            self.db.query(UniverseTickerExclusion)
+            .filter(UniverseTickerExclusion.active == True)
+            .all()
+        }
+        print(f'[exec_data_refresh] {len(excluded_tickers)} ticker(s) excluded from universe parquets')
+        GeneratePricesIndicators._excluded_tickers_cache = excluded_tickers
         for strategy in strategies:
             # ORM relationship is `regimes` (not `market_regimes`) — see
             # StrategyBucket.regimes back_populates MarketRegime.strategy.

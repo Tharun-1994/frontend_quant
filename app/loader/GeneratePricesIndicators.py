@@ -858,12 +858,14 @@ class GeneratePricesIndicators:
                 # can branch to the exec_data folder. Backtest callers
                 # omit these args (defaults: production=False, run_date=None)
                 # and take the legacy backtest_data path — same as before.
+                _excluded = getattr(GeneratePricesIndicators, '_excluded_tickers_cache', None)
                 loader.uploadCommonPath(
                     price_data=price_data,
                     universe=univ,
                     strategy_name=strategy.name,
                     production=production,
                     run_date=run_date,
+                    excluded_tickers=_excluded,
                 )
 
     @staticmethod

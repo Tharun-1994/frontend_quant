@@ -214,7 +214,7 @@ class StrategyRequest(BaseModel):
     # (validated frontend and again in the route).
     production_capital: Optional[float] = None
     execution_enabled: Optional[bool] = False
-
+    system_code: Optional[str] = None
     regimes: List[MarketRegimeBase] = []
 
     # global_filter : List[GlobalFilter]= []

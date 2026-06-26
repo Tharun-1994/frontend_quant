@@ -16,7 +16,7 @@ Phase 1 conventions:
   - Currency: USD
   - TimeInForce: DAY
   - OrderType: MKT when limit_price is null/0, else LMT
-  - OrderRef: strategy.name (full string — Vas-style short codes can come later)
+- OrderRef: strategy.system_code (Patch 81; full name — Vas-style short codes can come later)
   - Percentage: regime.stoploss_pct * 100, blank when stoploss disabled
   - Account: from IBKR_ACCOUNT env var, default 'U14642225'
 """
@@ -41,6 +41,114 @@ BASKET_COLUMNS = [
     "Symbol", "SecType", "Exchange", "Currency", "TimeInForce", "OrderType",
     "LmtPrice", "AuxPrice", "OCAGroup", "Rth", "OrderRef", "Percentage", "Rank",
 ]
+
+
+def build_entry_rows(
+    *,
+    account: str,
+    tl: Tradelist,
+    strat: StrategyBucket,
+    regime: MarketRegime,
+    order_id: int,
+) -> list[dict[str, Any]]:
+    """Patch 80: single source of truth for an entry row + its bracket child.
+
+    Returns [entry] when no stoploss, or [entry, child_stop] when
+    stoploss_pct > 0. Shared by build_combined_basket (CSV), build_substitute_basket
+    (SUB CSV) AND broker_write.write_broker_basket (xlsx) so OrderId hashing and
+    the entry+bracket structure are defined ONCE and cannot drift between the
+    three generators.
+
+    Entry order type (mirrors legacy Daily_Orders):
+      NORMAL + open  -> OPG MKT      NORMAL + close -> DAY MOC
+      LIMIT  + open  -> DAY LMT      LIMIT  + close -> DAY LOC   (LIMIT_ATR == LIMIT)
+    Child stop (only when stoploss_pct > 0), via _build_child_stop_row:
+      INTRADAY -> DAY STP            EOD -> DAY STPMOC
+      AuxPrice: NORMAL = blank (IBKR derives stop from Percentage x fill price);
+                LIMIT / LIMIT_ATR = engine initial_stop_price (handles PCT and ATR).
+      ParentOrderId on the child = this entry order_id (bracket linkage).
+    """
+    direction         = (tl.direction or "").upper()
+    basket_tag        = "long" if direction == "LONG" else "short"
+    action            = "BUY" if direction == "LONG" else "SELL"
+    regime_order_type = (regime.order_type or "NORMAL").upper()
+    entry_timing      = (regime.entry_timing or "open").lower()
+    limit_price_val   = _decimal_to_float(tl.limit_price)
+
+    if regime_order_type == "NORMAL":
+        if entry_timing == "open":
+            time_in_force, ibkr_order_type = "OPG", "MKT"
+        else:  # close
+            time_in_force, ibkr_order_type = "DAY", "MOC"
+        lmt_price = ""
+    elif regime_order_type in ("LIMIT", "LIMIT_ATR"):
+        time_in_force   = "DAY"
+        ibkr_order_type = "LMT" if entry_timing == "open" else "LOC"
+        lmt_price = (
+            round(limit_price_val, 4)
+            if limit_price_val and limit_price_val > 0 else ""
+        )
+    else:
+        print(f"[broker_basket_builder] WARN unknown order_type="
+              f"{regime_order_type!r} for strategy={strat.name}; "
+              f"falling back to OPG/MKT")
+        time_in_force, ibkr_order_type, lmt_price = "OPG", "MKT", ""
+
+    # Percentage = stoploss_pct (DB stores 20 for 20%). Applies to all order types.
+    stoploss_pct = _decimal_to_float(regime.stoploss_pct)
+    percentage = round(stoploss_pct, 4) if stoploss_pct and stoploss_pct > 0 else ""
+
+    # Entry AuxPrice = engine stop price for LIMIT/LIMIT_ATR (known at proposal),
+    # blank for NORMAL (fill price unknown until the open).
+    initial_stop_val = _decimal_to_float(tl.initial_stop_price)
+    aux_price = (
+        round(initial_stop_val, 4)
+        if regime_order_type in ("LIMIT", "LIMIT_ATR")
+           and initial_stop_val and initial_stop_val > 0
+        else ""
+    )
+
+    rows: list[dict[str, Any]] = [{
+        "Account": account,
+        "BasketTag": basket_tag,
+        "OrderId": order_id,
+        "ParentOrderId": "",
+        "Action": action,
+        "Quantity": int(tl.intended_qty or 0),
+        "Symbol": tl.symbol,
+        "SecType": "STK",
+        "Exchange": "SMART/AMEX",
+        "Currency": "USD",
+        "TimeInForce": time_in_force,
+        "OrderType": ibkr_order_type,
+        "LmtPrice": lmt_price,
+        "AuxPrice": aux_price,
+        "OCAGroup": "",
+        "Rth": "=FALSE()",
+        "OrderRef": strat.system_code or strat.name,  # Patch 81: system_code (Vas short code), not name
+        "Percentage": percentage,
+        "Rank": int(tl.ranking_rank) if tl.ranking_rank is not None else "",
+    }]
+
+    # Child bracket stop — only when a stoploss is configured.
+    if stoploss_pct and stoploss_pct > 0:
+        stoploss_timing = (regime.stoploss_timing or "EOD").upper()
+        child_action    = "SELL" if action == "BUY" else "BUY"
+        rows.append(_build_child_stop_row(
+            account=account,
+            basket_tag=basket_tag,
+            action=child_action,
+            quantity=int(tl.intended_qty or 0),
+            symbol=tl.symbol,
+            stoploss_timing=stoploss_timing,
+            regime_order_type=regime_order_type,
+            stop_price=initial_stop_val,
+            stoploss_pct=stoploss_pct,
+            parent_order_id=order_id,
+            strategy_name=strat.system_code or strat.name,  # Patch 81: system_code
+        ))
+
+    return rows
 
 
 def build_combined_basket(
@@ -98,80 +206,10 @@ def build_combined_basket(
         order_id_counters[strat.name] += 1
         order_id = order_id_counters[strat.name]
 
-        direction = (tl.direction or "").upper()
-        basket_tag = "long" if direction == "LONG" else "short"
-        action = "BUY" if direction == "LONG" else "SELL"
-
-        # Patch 44: TimeInForce + OrderType from regime.order_type ×
-        # regime.entry_timing, mirroring the legacy Daily_Orders methods:
-        #   NORMAL + open  → OPG MKT   (enter_entry_signals)
-        #   NORMAL + close → DAY MOC   (enter_entry_signals_on_close)
-        #   LIMIT  + open  → DAY LMT   (enter_entry_signals_with_limit_prices)
-        #   LIMIT  + close → DAY LOC   (limit-on-close variant)
-        # LIMIT_ATR is treated as LIMIT for basket-format purposes; the
-        # stop-bracket sibling row is handled by stoploss_pct logic below.
-        regime_order_type = (regime.order_type or "NORMAL").upper()
-        entry_timing = (regime.entry_timing or "open").lower()
-        limit_price_val = _decimal_to_float(tl.limit_price)
-
-        if regime_order_type == "NORMAL":
-            if entry_timing == "open":
-                time_in_force = "OPG"
-                ibkr_order_type = "MKT"
-            else:  # "close"
-                time_in_force = "DAY"
-                ibkr_order_type = "MOC"
-            lmt_price = ""  # MKT/MOC carry no limit price
-        elif regime_order_type in ("LIMIT", "LIMIT_ATR"):
-            time_in_force = "DAY"
-            ibkr_order_type = "LMT" if entry_timing == "open" else "LOC"
-            lmt_price = (
-                round(limit_price_val, 4)
-                if limit_price_val and limit_price_val > 0 else ""
-            )
-        else:
-            # Unknown order_type — safe fallback to OPG MKT with a warning
-            print(f"[broker_basket_builder] WARN unknown order_type="
-                  f"{regime_order_type!r} for strategy={strat.name}; "
-                  f"falling back to OPG/MKT")
-            time_in_force = "OPG"
-            ibkr_order_type = "MKT"
-            lmt_price = ""
-
-        # Percentage = stoploss_pct * 100. Blank when stoploss disabled.
-        stoploss_pct = _decimal_to_float(regime.stoploss_pct)
-        if stoploss_pct and stoploss_pct > 0:
-            percentage = round(stoploss_pct * 100.0, 4)
-        else:
-            percentage = ""
-
-        basket.append({
-            "Account":       account,
-            "BasketTag":     basket_tag,
-            # Patch 46: OrderId from per-strategy SHA256-seeded counter
-            # (matches legacy Daily_Orders 5-digit-range scheme). Bracket
-            # sibling rows (stop / TP) would carry ParentOrderId = this
-            # row's OrderId. PullBack has stoploss_pct=0 → no siblings in
-            # Phase 1; the parent-child pattern reactivates when stop
-            # strategies are added.
-            "OrderId":       order_id,
-            "ParentOrderId": "",
-            "Action":        action,
-            "Quantity":      int(tl.intended_qty or 0),
-            "Symbol":        tl.symbol,
-            "SecType":       "STK",
-            "Exchange":      "SMART/AMEX",
-            "Currency":      "USD",
-            "TimeInForce": time_in_force,
-            "OrderType": ibkr_order_type,
-            "LmtPrice": lmt_price,
-            "AuxPrice":      "",
-            "OCAGroup":      "",
-            "Rth":           "False",
-            "OrderRef": strat.name,
-            "Percentage": percentage,
-            "Rank": int(tl.ranking_rank) if tl.ranking_rank is not None else "",
-        })
+        # Patch 80: entry + bracket child built by the shared builder.
+        basket.extend(build_entry_rows(
+            account=account, tl=tl, strat=strat, regime=regime, order_id=order_id,
+        ))
 
     return basket
 
@@ -220,49 +258,17 @@ def build_substitute_basket(
     )
 
     basket: list[dict[str, Any]] = []
+    # Patch 80: hashed per-strategy OrderId (was ranking_rank) so the SUB file
+    # matches the main/test basket scheme — base = SHA256(name+"D")[:5], +1/row.
+    order_id_counters: dict[str, int] = {}
     for tl, strat, regime in rows:
-        direction = (tl.direction or "").upper()
-        regime_order_type = (regime.order_type or "NORMAL").upper()
-        entry_timing = (regime.entry_timing or "open").lower()
-        limit_price_val = _decimal_to_float(tl.limit_price)
-
-        if regime_order_type == "NORMAL":
-            time_in_force = "OPG" if entry_timing == "open" else "DAY"
-            ibkr_order_type = "MKT" if entry_timing == "open" else "MOC"
-            lmt_price = ""
-        elif regime_order_type in ("LIMIT", "LIMIT_ATR"):
-            time_in_force = "DAY"
-            ibkr_order_type = "LMT" if entry_timing == "open" else "LOC"
-            lmt_price = (
-                round(limit_price_val, 4)
-                if limit_price_val and limit_price_val > 0 else ""
-            )
-        else:
-            time_in_force = "OPG"
-            ibkr_order_type = "MKT"
-            lmt_price = ""
-
-        basket.append({
-            "Account":       account,
-            "BasketTag":     "long" if direction == "LONG" else "short",
-            "OrderId":       "",
-            "ParentOrderId": "",
-            "Action":        "BUY" if direction == "LONG" else "SELL",
-            "Quantity":      int(tl.intended_qty or 0),
-            "Symbol":        tl.symbol,
-            "SecType":       "STK",
-            "Exchange":      "SMART/AMEX",
-            "Currency":      "USD",
-            "TimeInForce":   time_in_force,
-            "OrderType":     ibkr_order_type,
-            "LmtPrice":      lmt_price,
-            "AuxPrice":      "",
-            "OCAGroup":      "",
-            "Rth":           "False",
-            "OrderRef":      strat.name,
-            "Percentage":    "",
-            "Rank":          int(tl.ranking_rank) if tl.ranking_rank is not None else "",
-        })
+        if strat.name not in order_id_counters:
+            order_id_counters[strat.name] = _strategy_orderid_base(strat.name)
+        order_id_counters[strat.name] += 1
+        order_id = order_id_counters[strat.name]
+        basket.extend(build_entry_rows(
+            account=account, tl=tl, strat=strat, regime=regime, order_id=order_id,
+        ))
 
     return basket
 
@@ -277,6 +283,68 @@ def substitute_to_csv_string(basket: list[dict[str, Any]]) -> str:
     for row in basket:
         writer.writerow(row)
     return buf.getvalue()
+
+
+def _build_child_stop_row(
+    account: str,
+    basket_tag: str,
+    action: str,
+    quantity: int,
+    symbol: str,
+    stoploss_timing: str,
+    regime_order_type: str,  # 'NORMAL' | 'LIMIT' | 'LIMIT_ATR'
+    stop_price: float | None,
+    stoploss_pct: float,
+    parent_order_id: int,
+    strategy_name: str,
+) -> dict:
+    """Build the child bracket stop row linked to a parent entry order.
+
+    stoploss_timing:
+      INTRADAY → STP    DAY  (fires intraday)
+      EOD      → STPMOC DAY  (fires at end of day)
+
+    AuxPrice logic:
+      NORMAL order: entry price unknown at proposal time (MKT fills at open).
+        AuxPrice = blank. IBKR computes the actual stop using Percentage
+        field applied to the fill price. e.g. Percentage=20 → IBKR sets
+        stop at fill_price * 0.80 automatically.
+
+      LIMIT / LIMIT_ATR order: engine computed stop_price at proposal time.
+        AuxPrice = initial_stop_price (absolute price). IBKR uses this
+        exact price as the stop trigger.
+    """
+    timing          = (stoploss_timing or 'EOD').upper()
+    order_type_up   = (regime_order_type or 'NORMAL').upper()
+    ibkr_order_type = 'STP' if timing == 'INTRADAY' else 'STPMOC'
+
+    # AuxPrice: only for LIMIT orders where stop price is known at proposal
+    if order_type_up in ('LIMIT', 'LIMIT_ATR') and stop_price and stop_price > 0:
+        aux_price = round(stop_price, 4)
+    else:
+        aux_price = ''   # NORMAL: IBKR derives stop from Percentage × fill_price
+
+    return {
+        'Account':       account,
+        'BasketTag':     basket_tag,
+        'OrderId':       '',
+        'ParentOrderId': parent_order_id,
+        'Action':        action,
+        'Quantity':      quantity,
+        'Symbol':        symbol,
+        'SecType':       'STK',
+        'Exchange':      'SMART/AMEX',
+        'Currency':      'USD',
+        'TimeInForce':   'DAY',
+        'OrderType':     ibkr_order_type,
+        'LmtPrice':      '',
+        'AuxPrice':      aux_price,
+        'OCAGroup':      '',
+        'Rth':           '=FALSE()',
+        'OrderRef':      strategy_name,
+        'Percentage':    round(stoploss_pct, 2) if stoploss_pct else '',
+        'Rank':          '',
+    }
 
 
 def _decimal_to_float(v: Any) -> float | None:

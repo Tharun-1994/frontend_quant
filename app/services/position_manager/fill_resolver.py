@@ -377,6 +377,199 @@ def resolve_exit_fills(
     return outcomes
 
 
+@dataclass
+class HypotheticalFillOutcome:
+    """P&L outcome for a SYSTEM-ledger row (original ticker never traded).
+
+    entry_price: open price on intended_trade_date for the original ticker.
+    exit_price:  open/close price on exit_date — same date as the linked
+                 TRADED row's exit (so comparison is apples-to-apples).
+    profit:      hypothetical P&L if the original had been held and sold
+                 on the same day as the substitute.
+    profit_pct:  profit / (entry_price * intended_qty).
+    day_count:   calendar days from intended_trade_date to exit_date inclusive.
+    """
+    row_id:     int
+    entry_price: float
+    exit_price:  float
+    profit:      float
+    profit_pct:  float
+    day_count:   int
+
+
+def resolve_hypothetical_fills(
+    db: Session,
+    run_date: date,
+    data_root: str,
+    universe: str,
+    rebalance: str,
+) -> list[HypotheticalFillOutcome]:
+    """Compute hypothetical entry + exit prices for SYSTEM-ledger rows.
+
+    SYSTEM rows are created by overlay_apply when Vas elides or substitutes
+    a ticker. They carry the original symbol the engine picked but were never
+    executed. This function populates their entry_price, exit_price, profit,
+    profit_pct, and day_count from parquet data so future analysis can compare:
+      actual substitute P&L  vs  hypothetical original P&L.
+
+    Called from runner.py Step A.6 after exit fill resolution. Runs across ALL
+    strategies (not per-strategy) since SYSTEM rows span strategies and the
+    parquets loaded here are universe-wide.
+
+    Two sub-cases handled per nightly run:
+
+    Case 1 — entry price not yet set:
+        SYSTEM row has intended_trade_date == run_date and entry_price IS NULL.
+        Look up the open price for the original ticker on run_date.
+        Write entry_price and entry_date.
+
+    Case 2 — exit price not yet set:
+        SYSTEM row has exit_date == run_date and exit_price IS NULL
+        AND entry_price IS NOT NULL (already set).
+        Look up the open/close price on run_date (exit_timing from linked
+        TRADED row's regime).
+        Write exit_price, profit, profit_pct, day_count, status='EXITED'.
+
+    Args:
+        db:          SQLAlchemy session (read-only; runner owns transaction).
+        run_date:    data date — the bar that just closed.
+        data_root:   path to exec_data/{YYYYMMDD}/ folder.
+        universe:    universe slug (e.g. 'sp500').
+        rebalance:   strategy.rebalance (e.g. 'daily').
+
+    Returns:
+        List of HypotheticalFillOutcome for rows whose exit was resolved today.
+        Entry-only updates (Case 1) are applied directly to the DB rows and
+        not included in the returned list (no profit to record yet).
+    """
+    # ── Case 1 — entry price fill ─────────────────────────────────────────────
+    entry_rows = (
+        db.query(Tradelist)
+        .filter(
+            Tradelist.ledger == 'SYSTEM',
+            Tradelist.intended_trade_date == run_date,
+            Tradelist.entry_price.is_(None),
+        )
+        .all()
+    )
+
+    # ── Case 2 — exit price fill ──────────────────────────────────────────────
+    exit_rows = (
+        db.query(Tradelist)
+        .filter(
+            Tradelist.ledger == 'SYSTEM',
+            Tradelist.exit_date == run_date,
+            Tradelist.entry_price.isnot(None),
+            Tradelist.exit_price.is_(None),
+        )
+        .all()
+    )
+
+    if not entry_rows and not exit_rows:
+        return []
+
+    print(
+        f'[fill_resolver] hypothetical fills: '
+        f'{len(entry_rows)} entry row(s), {len(exit_rows)} exit row(s) on {run_date}'
+    )
+
+    # Load parquets once for both cases
+    parquet_dir = Path(data_root) / universe
+    prefix      = _prefix_for_rebalance(rebalance)
+
+    try:
+        day_opens  = _read_day_series(parquet_dir / f'{prefix}opens.parquet',  run_date)
+        day_closes = _read_day_series(parquet_dir / f'{prefix}closes.parquet', run_date)
+    except (FileNotFoundError, KeyError) as e:
+        print(f'[fill_resolver] WARNING: hypothetical fills skipped — '
+              f'could not load parquet: {e}')
+        return []
+
+    # Case 1 — write entry_price for SYSTEM rows entering today
+    for row in entry_rows:
+        price = day_opens.get(row.symbol)
+        if price is None or price <= 0:
+            print(f'[fill_resolver]   hypothetical entry: {row.symbol} '
+                  f'not in opens parquet for {run_date} — skipping')
+            continue
+        row.entry_price = float(price)
+        row.entry_date  = run_date
+        row.entry_timing = 'open'
+        print(f'[fill_resolver]   hypothetical entry id={row.id} '
+              f'{row.symbol} entry_price={price:.4f}')
+
+    # Case 2 — write exit_price + profit for SYSTEM rows exiting today
+    # Resolve exit_timing from the linked TRADED row's regime
+    outcomes: list[HypotheticalFillOutcome] = []
+    regime_cache: dict[int, MarketRegime] = {}
+
+    for row in exit_rows:
+        # Get exit_timing from the linked TRADED row (substitute_link_id points
+        # to the SYSTEM row FROM the TRADED row — so query the other direction)
+        linked_traded = (
+            db.query(Tradelist)
+            .filter(
+                Tradelist.substitute_link_id == row.id,
+                Tradelist.ledger == 'TRADED',
+            )
+            .first()
+        )
+
+        exit_timing = 'open'   # default — matches PullBack open exits
+        if linked_traded and linked_traded.entered_regime_id:
+            regime_id = linked_traded.entered_regime_id
+            if regime_id not in regime_cache:
+                regime_cache[regime_id] = (
+                    db.query(MarketRegime).filter_by(id=regime_id).first()
+                )
+            regime = regime_cache.get(regime_id)
+            if regime:
+                exit_timing = (regime.exit_timing or 'open').lower()
+
+        exit_price = (
+            day_closes.get(row.symbol)
+            if exit_timing == 'close'
+            else day_opens.get(row.symbol)
+        )
+
+        if exit_price is None or exit_price <= 0:
+            print(f'[fill_resolver]   hypothetical exit: {row.symbol} '
+                  f'not in parquet for {run_date} — skipping')
+            continue
+
+        exit_price    = float(exit_price)
+        entry_price   = float(row.entry_price)
+        intended_qty  = int(row.intended_qty or 0)
+        direction     = (row.direction or 'LONG').upper()
+
+        if direction == 'LONG':
+            profit = (exit_price - entry_price) * intended_qty
+        else:
+            profit = (entry_price - exit_price) * intended_qty
+
+        cost       = entry_price * intended_qty
+        profit_pct = (profit / cost) if cost != 0 else 0.0
+        day_count  = (run_date - row.intended_trade_date).days + 1 if row.intended_trade_date else 0
+
+        outcomes.append(HypotheticalFillOutcome(
+            row_id=row.id,
+            entry_price=entry_price,
+            exit_price=exit_price,
+            profit=profit,
+            profit_pct=profit_pct,
+            day_count=day_count,
+        ))
+
+        print(
+            f'[fill_resolver]   hypothetical exit id={row.id} {row.symbol}: '
+            f'entry={entry_price:.4f} exit={exit_price:.4f} '
+            f'profit={profit:.2f} profit_pct={profit_pct:.4f}'
+        )
+
+    print(f'[fill_resolver] hypothetical exits resolved: {len(outcomes)}')
+    return outcomes
+
+
 def _safe_lookup(series: pd.Series, ticker: str, row_id: int, column_name: str) -> float:
     """Read one ticker's value from a day's series. Raises explicitly if
     the ticker is missing (e.g. delisted before today's bar) rather than

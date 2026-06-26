@@ -134,8 +134,11 @@ def insert_proposed_rows(
           f'proposed_orders={len(proposed_orders)}')
 
     # 4. Split: top free_slots → PROPOSED, next pool_size → SUBSTITUTE_POOL
+    # Substitute pool only makes sense when there are new entries to swap.
+    # When free_slots = 0 (all slots occupied by LIVE positions), insert
+    # nothing — there are no PROPOSED entries for Vas to substitute.
     proposed_slice = proposed_orders[:free_slots]
-    pool_slice = proposed_orders[free_slots:free_slots + pool_size]
+    pool_slice = proposed_orders[free_slots:free_slots + pool_size] if free_slots > 0 else []
 
     # 5. Insert
     proposed_inserted = 0

@@ -70,6 +70,7 @@ def get_strategy(strategy_id: int, db: Session = Depends(get_db)):
             if strategy.production_capital is not None else None
         ),
         execution_enabled=bool(strategy.execution_enabled),
+        system_code=strategy.system_code,
     )
 
 
@@ -125,6 +126,7 @@ def save_strategy(strategy_data: StrategyRequest, db: Session = Depends(get_db))
         strategy.market_regime_type = strategy_data.market_regime_type
         # Patch 55: production_capital write removed — see docstring.
         strategy.execution_enabled = bool(strategy_data.execution_enabled)
+        strategy.system_code = (strategy_data.system_code or '').strip().upper() or None
         action = "updated"
     else:
         strategy = StrategyBucket(
@@ -138,6 +140,7 @@ def save_strategy(strategy_data: StrategyRequest, db: Session = Depends(get_db))
             market_regime_type=strategy_data.market_regime_type,
             # Patch 55: production_capital not set here — see docstring.
             execution_enabled=bool(strategy_data.execution_enabled),
+            system_code=(strategy_data.system_code or '').strip().upper() or None,
         )
         db.add(strategy)
         action = "created"

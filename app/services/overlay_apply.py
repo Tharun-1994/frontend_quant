@@ -65,6 +65,14 @@ from app.models.eod_run_log import EodRunLog
 VALID_ACTIONS = {'elide', 'substitute', 'adjust_capital', 'half_size'}
 REQUIRED_CSV_COLUMNS = {'original_symbol', 'action'}
 
+# Vas's real column names → internal names
+_VAS_COLUMN_MAP = {
+    'original':   'original_symbol',
+    'substitute': 'substitute_symbol',
+    'capital':    'adjusted_capital',
+    # 'action', 'reason_for_action', 'Date', 'System' pass through as-is
+}
+
 
 def apply_overlay(
     db: Session,
@@ -146,6 +154,7 @@ def apply_overlay(
                 action=a['action'],
                 substitute_symbol=a.get('substitute_symbol'),
                 adjusted_capital=a.get('adjusted_capital'),
+                reason_for_action=a.get('reason_for_action'),
                 csv_source_path=csv_source_path,
                 uploaded_by=uploaded_by,
             ))
@@ -191,35 +200,65 @@ def apply_overlay(
 
 
 def _parse_csv(csv_text: str) -> list[dict]:
-    """Parse CSV text → list of action dicts. Raises ValueError on bad format."""
+    """Parse CSV text → list of action dicts. Handles both formats:
+
+    Old format (one file per strategy):
+        original_symbol, action, substitute_symbol, adjusted_capital
+
+    Vas's combined format (one file, all strategies):
+        Date, System, original, substitute, action, capital, reason_for_action
+
+    Auto-detected by presence of 'original' column (Vas) vs 'original_symbol' (old).
+    Column names are normalised before processing.
+    Action values are case-normalised ('ADJUST_CAPITAL' → 'adjust_capital').
+
+    Returns list of action dicts with keys:
+        original_symbol, action, substitute_symbol, adjusted_capital,
+        reason_for_action (optional), system_code (optional), override_date (optional)
+    """
     reader = csv.DictReader(StringIO(csv_text.strip()))
     if not reader.fieldnames:
         raise ValueError('CSV is empty or has no header row')
 
-    fields = {f.strip() for f in reader.fieldnames}
-    missing = REQUIRED_CSV_COLUMNS - fields
-    if missing:
-        raise ValueError(
-            f'CSV missing required columns: {sorted(missing)}. '
-            f'Got header: {reader.fieldnames}'
-        )
+    # Normalise header: strip whitespace, apply column name mapping
+    raw_fields = [f.strip() for f in reader.fieldnames]
+    is_vas_format = 'original' in raw_fields  # Vas uses 'original', old uses 'original_symbol'
 
     actions = []
-    for i, row in enumerate(reader, start=2):  # row 2 = first data row
-        original = (row.get('original_symbol') or '').strip().upper()
-        action = (row.get('action') or '').strip().lower()
+    for i, raw_row in enumerate(reader, start=2):
+        # Strip whitespace from all values and remap column names
+        row: dict = {}
+        for k, v in raw_row.items():
+            key = (k or '').strip()
+            key = _VAS_COLUMN_MAP.get(key, key)   # remap Vas's names → internal
+            row[key] = (v or '').strip()
+
+        original = row.get('original_symbol', '').upper()
+        action   = row.get('action', '').lower()    # case-normalise
+        reason   = row.get('reason_for_action') or None
+        sys_code = row.get('System') or None
 
         if not original:
-            raise ValueError(f'CSV row {i}: original_symbol is empty')
+            raise ValueError(f'CSV row {i}: original symbol is empty')
         if action not in VALID_ACTIONS:
             raise ValueError(
                 f'CSV row {i}: invalid action {action!r}. '
                 f'Must be one of {sorted(VALID_ACTIONS)}'
             )
 
-        sub = (row.get('substitute_symbol') or '').strip().upper() or None
-        cap_str = (row.get('adjusted_capital') or '').strip()
-        cap = float(cap_str) if cap_str else None
+        sub     = row.get('substitute_symbol', '').upper() or None
+        cap_str = row.get('adjusted_capital', '')
+        cap     = float(cap_str) if cap_str else None
+
+        # Parse override_date from Date column if present (DD/MM/YYYY UK format)
+        override_date_str = row.get('Date', '')
+        override_date_parsed = None
+        if override_date_str:
+            try:
+                from datetime import datetime as _dt
+                override_date_parsed = _dt.strptime(override_date_str, '%d/%m/%Y').date()
+            except ValueError:
+                pass   # caller-supplied override_date takes precedence
 
         if action == 'substitute' and not sub:
             raise ValueError(
@@ -229,10 +268,13 @@ def _parse_csv(csv_text: str) -> list[dict]:
                 f'CSV row {i}: action=adjust_capital requires adjusted_capital')
 
         actions.append({
-            'original_symbol': original,
-            'action': action,
+            'original_symbol':   original,
+            'action':            action,
             'substitute_symbol': sub,
-            'adjusted_capital': cap,
+            'adjusted_capital':  cap,
+            'reason_for_action': reason,
+            'system_code':       sys_code,
+            'override_date':     override_date_parsed,
         })
 
     return actions

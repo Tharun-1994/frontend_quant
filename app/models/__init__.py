@@ -11,6 +11,8 @@ from app.models.eod_run_log import EodRunLog
 from app.models.strategy_production_capital_history import StrategyProductionCapitalHistory
 from app.models.trader_observation import TraderObservation
 from app.models.tradelist_stop_history import TradelistStopHistory
+from app.models.live_equity_snapshot import LiveEquitySnapshot
+from app.models.universe_ticker_exclusion import UniverseTickerExclusion
 
 
 

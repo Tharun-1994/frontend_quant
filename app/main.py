@@ -33,6 +33,7 @@ from app.routes.backtest import router as backtest_router
 from app.routes.config_route import router as config_router
 from app.routes.eod import router as eod_router
 from app.routes.tradelist import router as tradelist_router
+from app.routes.universe_exclusions import router as universe_exclusions_router
 from app.routes.equity_view import router as equity_router
 from app.routes.indicators_route import router as indicators_router
 from app.routes.strategies import router as strategies_router
@@ -41,6 +42,7 @@ from app.services.sync_indicators import sync_indicators
 from app.routes.mechanics_route import router as mechanics_router
 from app.services.sync_mechanics import sync_mechanics
 # mechanics:END
+from app.scripts.scheduler import create_scheduler
 from app.Settings import settings
 
 logging.basicConfig(level=logging.INFO)
@@ -67,7 +69,18 @@ async def lifespan(app: FastAPI):
     finally:
         db.close()
     # mechanics:END
+
+    # ── Scheduler ─────────────────────────────────────────────────────────────
+    # Starts background jobs for nightly EOD (22:30 UK) and morning basket
+    # (07:30 UK). Scheduler shuts down cleanly when the app exits (after yield).
+    scheduler = create_scheduler()
+    scheduler.start()
+    logger.info('[scheduler] started — eod=22:30 UK, morning=07:30 UK')
+
     yield  # app runs here
+
+    scheduler.shutdown(wait=False)
+    logger.info('[scheduler] shut down')
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
@@ -107,6 +120,7 @@ app.include_router(eod_router)
 app.include_router(tradelist_router)
 # System Comparison: upload + compare equity/tradelist CSVs
 app.include_router(uploaded_systems_router)
+app.include_router(universe_exclusions_router)
 
 # ── Global exception handler ──────────────────────────────────────────────────
 
