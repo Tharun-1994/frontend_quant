@@ -277,8 +277,10 @@ def get_live_performance(strategy_id: int, db: _Session = _Depends(_get_db)):
             monthly_returns_out.append({'year': yr, 'months': months, 'total': total})
 
         # Monthly trade counts
-        close_dates = _pd.to_datetime([t.exit_date for t in closed if t.exit_date])
-        mt_series   = close_dates.groupby([close_dates.dt.year, close_dates.dt.month]).size()
+        # Patch 86: to_datetime(list) yields a DatetimeIndex (no .dt accessor);
+        # wrap in a Series so .dt.year/.dt.month + groupby().size() work.
+        close_dates = _pd.Series(_pd.to_datetime([t.exit_date for t in closed if t.exit_date]))
+        mt_series = close_dates.groupby([close_dates.dt.year, close_dates.dt.month]).size()
         mt_lookup   = {(int(y), int(m)): int(c) for (y, m), c in mt_series.items()}
 
         for row_data in monthly_returns_out:

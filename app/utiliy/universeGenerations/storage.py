@@ -92,7 +92,21 @@ class CsvDataStore(DataStore):
 
         if dataset.membership is not None:
             dataset.membership.index.name = self.INDEX_NAME
-            dataset.membership.to_csv(out / f'{dataset.slug}.csv')
+            membership_out = out / f'{dataset.slug}.csv'
+            # Patch 90: backup source-of-truth for liquid500 BEFORE
+            # overwrite. Wires the same _backup_csv helper used by the
+            # button path into the pipeline path, so any write to
+            # liquid500.csv (universe_pipeline.run, future automatic
+            # paths, etc.) gets versioned to _versions/ on disk.
+            # Loud-fails if backup can't land — we don't proceed to
+            # overwrite the source of truth without a confirmed snapshot.
+            # Other slugs unchanged.
+            if dataset.slug == 'liquid500' and membership_out.exists():
+                from app.utiliy.universeGenerations.liquid500_membership import (
+                    _backup_csv,
+                )
+                _backup_csv(membership_out)
+            dataset.membership.to_csv(membership_out)
 
         manifest = dict(dataset.manifest)
         manifest['written_at'] = datetime.now().isoformat(timespec='seconds')

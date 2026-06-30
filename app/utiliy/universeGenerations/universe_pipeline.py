@@ -131,7 +131,7 @@ if __name__ == '__main__':
     )
 
     # First verification run: one universe, diff against your existing folder.
-    # pipeline.run(only={'liquid500'})
+    pipeline.run(only={'liquid500'})
 
     # Nightly (Task Scheduler): refresh the whole registry.
-    pipeline.run()
+    # pipeline.run(only={'russell3000'})

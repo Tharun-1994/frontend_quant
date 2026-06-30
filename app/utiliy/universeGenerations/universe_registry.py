@@ -35,21 +35,31 @@ class UniverseSpec:
     drop_source_tickers: list = None
 
 
-# Maintained Liquid 500 membership file. If your pipeline keeps a separate
-# night-built copy, point this at the correct one (or branch on the hour).
+# Patch 89: source-of-truth membership lives inside the universe folder
+# alongside daily_*.csv, NOT in the legacy liquid_universe/Final_Liquid_500_QAS
+# location. Single file: CsvDataStore.read_universe('liquid500'),
+# _fetch_membership_window(universe_key='Liquid_500'), and
+# extend_liquid500_membership all read/write this same path.
 LIQUID_500_CSV = (
-    r'C:\Tharun\Projects\backtest_data\liquid_universe'
-    r'\Final_Liquid_500_QAS\Dan_US_Liquid_500_most_recent_5_price_drop.csv'
+    r'C:\Tharun\Projects\backtest_data\universes\liquid500\liquid500.csv'
 )
 
 REGISTRY = [
-    # UniverseSpec('liquid500',   'Liquid_500',   dt.date(1998, 1, 28), liquid_500_csv=LIQUID_500_CSV),
-    # UniverseSpec('russell3000', 'Russell 3000', dt.date(2000, 6, 29)),
-    UniverseSpec('sp500',       'S&P 500',      dt.date(1998, 1, 28)),
-    UniverseSpec('spy',         ['SPY'],        dt.date(1998, 1, 28)),
+    # Patch 91: legacy-parity REGISTRY order. sp1500 + russell3000 MUST be
+    # extended BEFORE liquid500 because the liquid500 membership service's
+    # OTC restriction reads from universes/sp1500/sp1500.csv and
+    # universes/russell3000/russell3000.csv (legacy-pattern: maintained
+    # local files, NOT Norgate-direct). For each manual-button click the
+    # loop processes dependencies first, then liquid500's membership
+    # pre-step finds them up to date. spy stays last (no dependency).
+    UniverseSpec('sp500',       'S&P 500',            dt.date(1998, 1, 28)),
+    UniverseSpec('sp1500',      'S&P Composite 1500', dt.date(1998, 1, 28)),
+    UniverseSpec('russell3000', 'Russell 3000',       dt.date(2000, 6, 29)),
+    UniverseSpec('liquid500',   'Liquid_500',         dt.date(1998, 1, 28), liquid_500_csv=LIQUID_500_CSV),
+    UniverseSpec('spy',         ['SPY'],              dt.date(1998, 1, 28)),
     # UniverseSpec('index',     ['$SPX', '$RUI', '$RUT'], dt.date(1998, 1, 28)),
-    # UniverseSpec('sp100', 'S&P 100', dt.date(1998, 1, 28))
-    # UniverseSpec('nasdaq100', 'Nasdaq 100', dt.date(1998, 1, 28))
+    # UniverseSpec('sp100',     'S&P 100',            dt.date(1998, 1, 28)),
+    # UniverseSpec('nasdaq100', 'Nasdaq 100',         dt.date(1998, 1, 28)),
 
     # LRA Patch 14: LONG_SHORT universe — 14 tradable tickers. CHFAUD is synthesized
     # from CHFUSD * USDAUD; sources are dropped after compute (Patch 15 hook).

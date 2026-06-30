@@ -73,7 +73,14 @@ class UniverseProvider:
         # Drop any stray index columns ('Unnamed: 0' etc.) so they never leak
         # into self.tickers and get fed to Norgate as a phantom symbol.
         membership = membership.loc[:, ~membership.columns.str.startswith('Unnamed')]
-        return membership.loc[self.start_date:self.end_date]
+        # Patch 90: do NOT slice by start_date for Liquid_500. The CSV is
+        # the source of truth — slicing on read means it gets written
+        # back truncated by store.write_universe(), silently losing
+        # pre-start_date history. PriceProvider receives tickers and
+        # date range as separate args (see daily_data_generator.generate),
+        # so price-fetch scope is unaffected by preserving full history.
+        # Bound the END only — never write rows beyond the run's end_date.
+        return membership.loc[:self.end_date]
 
     def _build_from_index(self):
         watchlist = f'{self.universe} Current & Past'

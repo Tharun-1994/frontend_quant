@@ -452,7 +452,30 @@ def refresh_all_today(end_date: Optional[dt.date] = None,
         if only_universes is not None and spec.slug not in only_universes:
             continue
         try:
-            universe_results.append(append_universe_today(store, spec, resolved))
+            # Patch 89: liquid500 membership pre-step. Extend the
+            # source-of-truth liquid500.csv (ffill on non-month-start days;
+            # recompute composition on month-starts via the legacy
+            # rank-by-ADV / price-drop / OTC / A-B-dedupe / sector-cap
+            # pipeline) BEFORE append_universe_today reads it to extend
+            # daily_*.csv prices. sp500 / spy / russell3000 don't need this
+            # — their membership is fetched live from a Norgate watchlist
+            # by _fetch_membership_window. Lazy import keeps norgatedata
+            # off this module's import path until a refresh actually runs.
+            membership_info = None
+            if spec.slug == 'liquid500':
+                from app.utiliy.universeGenerations.liquid500_membership import (
+                    extend_liquid500_membership,
+                )
+                membership_info = extend_liquid500_membership(
+                    spec.liquid_500_csv, end_date=resolved,
+                )
+            result = append_universe_today(store, spec, resolved)
+            if membership_info is not None:
+                # Surface the pre-step's outcome in the response payload
+                # so the result panel can display it. Additive — never
+                # overwrites existing append_universe_today fields.
+                result['membership'] = membership_info
+            universe_results.append(result)
         except Exception as e:
             universe_results.append({'slug': spec.slug, 'status': 'ERROR',
                                      'reason': f'{type(e).__name__}: {e}'})
