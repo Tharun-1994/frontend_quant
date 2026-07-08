@@ -18,11 +18,14 @@ Action semantics:
                    source_tag=SUBSTITUTE. The substitute symbol's
                    SUBSTITUTE_POOL row promotes to PENDING_FILL with
                    substitute_link_id pointing back at the SYSTEM shadow.
-  adjust_capital — PROPOSED → PENDING_FILL, intended_capital replaced, qty
-                   recomputed (new_capital / inferred_reference_close),
-                   source_tag=ADJUSTED.
-  half_size      — PROPOSED → PENDING_FILL, qty and capital both halved
-                   (integer-floor on qty), source_tag=ADJUSTED.
+  adjust_capital — Patch 101: legacy vas_helper math. REDUCE-ONLY: no-op
+                   when qty×ref <= target. Otherwise qty = ceil(qty ×
+                   target/(qty×ref)), ref = limit_price (LIMIT/LIMIT_ATR)
+                   or inferred capital/qty (NORMAL). capital = new_qty×ref.
+                   PROPOSED → PENDING_FILL, source_tag=ADJUSTED.
+  half_size      — Patch 101: qty = ceil(qty/2) (legacy np.ceil — odd
+                   rounds UP), capital scaled proportionally.
+                   PROPOSED → PENDING_FILL, source_tag=ADJUSTED.
 
 Untouched PROPOSED rows stay PROPOSED. Broker-write (D2) auto-promotes
 them on its own run (implicit "kept by trader").
@@ -48,6 +51,7 @@ Phase 1 contract:
 
 from __future__ import annotations
 import csv
+import math
 import traceback
 from datetime import date, datetime
 from decimal import Decimal
@@ -137,6 +141,7 @@ def apply_overlay(
         'overrides_recorded': 0,
         'elided': 0, 'substituted': 0,
         'adjusted_capital': 0, 'half_sized': 0,
+        'adjust_reduce_only_noop': 0,   # Patch 101: legacy reduce-only skips
         'skipped_no_match': 0,
     }
 
@@ -166,6 +171,7 @@ def apply_overlay(
             if outcome == 'elide':           summary['elided']            += 1
             elif outcome == 'substitute':    summary['substituted']       += 1
             elif outcome == 'adjust_capital':summary['adjusted_capital']  += 1
+            elif outcome == 'adjust_noop':   summary['adjust_reduce_only_noop'] += 1
             elif outcome == 'half_size':     summary['half_sized']        += 1
             elif outcome == 'skipped':       summary['skipped_no_match']  += 1
 
@@ -228,10 +234,44 @@ def _parse_csv(csv_text: str) -> list[dict]:
     for i, raw_row in enumerate(reader, start=2):
         # Strip whitespace from all values and remap column names
         row: dict = {}
+        extras: list = []
         for k, v in raw_row.items():
-            key = (k or '').strip()
+            # Patch 103: a data row with MORE fields than the header (an
+            # UNQUOTED comma in free text, e.g. reason 'concentr 50Y, L1',
+            # or capital typed as '2,000') makes csv.DictReader park the
+            # spillover under key None as a LIST — which used to crash
+            # '.strip()' with a 500. Collect it instead and rejoin below.
+            if k is None:
+                extras = [str(x).strip() for x in (v or [])]
+                continue
+            if isinstance(v, list):   # duplicate header names — defensive
+                v = ','.join(str(x) for x in v)
+            # lstrip BOM: Excel's UTF-8 CSVs prefix the first header cell
+            # with \ufeff, silently breaking the 'Date' column match.
+            key = (k or '').strip().lstrip('\ufeff')
             key = _VAS_COLUMN_MAP.get(key, key)   # remap Vas's names → internal
             row[key] = (v or '').strip()
+
+        if extras:
+            # Spillover from an unquoted comma. Safe to fold into the
+            # free-text reason ONLY for rows that carry no capital — for
+            # adjust_capital rows we cannot distinguish a comma in the
+            # reason from capital typed as '2,000' (which would silently
+            # shift columns and size the trade to $2). Hard-fail those
+            # with a row-numbered message instead of guessing.
+            if (row.get('action', '').strip().lower() == 'adjust_capital'):
+                raise ValueError(
+                    f'CSV row {i}: unquoted comma detected on an '
+                    f'adjust_capital row — ambiguous (comma in reason, or '
+                    f'capital typed as "2,000"?). Quote the reason text '
+                    f'and write capital without thousands separators.'
+                )
+            tail = ', '.join(x for x in extras if x)
+            base = row.get('reason_for_action', '')
+            row['reason_for_action'] = f'{base}, {tail}' if base else tail
+            print(f'[overlay_apply] WARN csv row {i}: {len(extras)} unquoted '
+                  f'extra field(s) folded into reason_for_action — quote '
+                  f'free-text fields containing commas')
 
         original = row.get('original_symbol', '').upper()
         action   = row.get('action', '').lower()    # case-normalise
@@ -358,31 +398,70 @@ def _apply_one_action(
         return 'substitute'
 
     if action == 'adjust_capital':
-        new_capital = Decimal(str(action_row['adjusted_capital']))
-        # Recompute qty from the inferred reference price.
-        # intended_capital and intended_qty as stored were derived from
-        # referenceClose; back into it as capital/qty and re-divide.
-        if original_row.intended_qty and original_row.intended_qty > 0:
-            ref_price = original_row.intended_capital / Decimal(original_row.intended_qty)
-            new_qty = int(new_capital / ref_price) if ref_price > 0 else 0
+        # Patch 101: exact legacy vas_helper math.
+        #   ref      = LmtPrice when the row has one (LIMIT/LIMIT_ATR);
+        #              inferred capital/qty for NORMAL rows (no limit stored).
+        #   total    = qty × ref            (current committed capital)
+        #   REDUCE-ONLY: if total <= target → NO-OP (legacy only shrinks;
+        #              upsizing was never a trader capability).
+        #   factor   = target / total
+        #   new_qty  = ceil(qty × factor)   (legacy np.ceil)
+        #   capital  = new_qty × ref        (true exposure — matches broker
+        #              file, so next-day FILLED holdings reconcile with IB).
+        target = Decimal(str(action_row['adjusted_capital']))
+        old_qty = int(original_row.intended_qty or 0)
+        limit_p = original_row.limit_price
+        if limit_p and Decimal(limit_p) > 0:
+            ref_price = Decimal(limit_p)
+        elif old_qty > 0 and original_row.intended_capital:
+            ref_price = Decimal(original_row.intended_capital) / Decimal(old_qty)
         else:
-            new_qty = 0
+            ref_price = Decimal(0)
+
+        total = ref_price * old_qty
+        if total <= 0 or old_qty <= 0:
+            print(f'[overlay_apply]   {original} → ADJUST_CAPITAL SKIPPED '
+                  f'(qty={old_qty}, ref={ref_price} — nothing to size)')
+            return 'skipped'
+        if total <= target:
+            # Legacy reduce-only: leave the row untouched (stays PROPOSED;
+            # broker_write auto-promotes it unchanged). Audit row already
+            # recorded above.
+            print(f'[overlay_apply]   {original} → ADJUST_CAPITAL NO-OP '
+                  f'(current {total:.2f} <= target {target:.2f}; reduce-only, '
+                  f'matching legacy vas_helper)')
+            return 'adjust_noop'
+
+        factor  = target / total
+        new_qty = int(math.ceil(old_qty * float(factor)))   # legacy np.ceil
+        new_capital = (ref_price * new_qty).quantize(Decimal('0.01'))
 
         original_row.intended_capital = new_capital
         original_row.intended_qty     = new_qty
         original_row.status           = 'PENDING_FILL'
         original_row.source_tag       = 'ADJUSTED'
-        print(f'[overlay_apply]   {original} → ADJUST_CAPITAL '
-              f'capital={new_capital} qty={new_qty} → PENDING_FILL')
+        print(f'[overlay_apply]   {original} → ADJUST_CAPITAL target={target} '
+              f'ref={ref_price:.4f} qty {old_qty}→{new_qty} '
+              f'capital→{new_capital} → PENDING_FILL')
         return 'adjust_capital'
 
     if action == 'half_size':
-        original_row.intended_qty     = (original_row.intended_qty or 0) // 2
-        original_row.intended_capital = original_row.intended_capital / Decimal(2)
+        # Patch 101: legacy np.ceil(qty / 2) — odd quantities round UP
+        # (37 → 19), matching every M_Combined Vas has ever produced.
+        # Capital scales proportionally to the actual new qty so intended
+        # exposure stays consistent with the broker file and next-day
+        # FILLED holdings reconcile with IB.
+        old_qty = int(original_row.intended_qty or 0)
+        new_qty = int(math.ceil(old_qty / 2)) if old_qty > 0 else 0
+        if old_qty > 0 and original_row.intended_capital:
+            original_row.intended_capital = (
+                Decimal(original_row.intended_capital) * new_qty / old_qty
+            ).quantize(Decimal('0.01'))
+        original_row.intended_qty     = new_qty
         original_row.status           = 'PENDING_FILL'
         original_row.source_tag       = 'ADJUSTED'
-        print(f'[overlay_apply]   {original} → HALF_SIZE '
-              f'qty={original_row.intended_qty} → PENDING_FILL')
+        print(f'[overlay_apply]   {original} → HALF_SIZE qty {old_qty}→{new_qty} '
+              f'(legacy ceil) → PENDING_FILL')
         return 'half_size'
 
     return 'skipped'  # unreachable

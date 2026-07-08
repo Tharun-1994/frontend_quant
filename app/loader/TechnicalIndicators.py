@@ -1128,8 +1128,21 @@ class IndicatorCalculator:
     @staticmethod
     @register
     def connors_ROC(df,lookback=100):
+        # Patch 100: vectorized. rank(method='min') of the window's last
+        # value = 1 + count(values strictly less than it), so rank-1 is
+        # exactly the legacy loop's len(y[y < y[-1]]). Parity-tested
+        # bit-identical against connors_ROC_loop on NaN heads, halt gaps,
+        # zero deltas and heavy ties; ~100x faster (C rolling rank vs
+        # python lambda per window). NaN-in-window -> NaN, same as before
+        # (min_periods defaults to the window size in both).
         roc_df = IndicatorCalculator.ROC(df, 1)
-        #print(roc_df)
+        return roc_df.rolling(lookback).rank(method='min') - 1.0
+
+    @staticmethod
+    def connors_ROC_loop(df,lookback=100):
+        # Pre-Patch 100 implementation — kept (unregistered) as the parity
+        # reference for connors_ROC. Do not call in production paths.
+        roc_df = IndicatorCalculator.ROC(df, 1)
         return roc_df.apply(lambda x: x.rolling(lookback).apply(lambda y: len(y.values[y.values<y.values[-1]])),0)
 
 
@@ -1146,11 +1159,37 @@ class IndicatorCalculator:
     @staticmethod
     @register
     def integrate_updown(series_up, series_down):
+        # Patch 100: vectorized streak. Replicates the legacy per-row loop
+        # exactly (parity-tested bit-identical): NaN rows stay NaN and do
+        # NOT reset the streak (the run continues across gaps); a zero
+        # delta (unchanged close, sign==0) counts as a DOWN continuation,
+        # matching the legacy else-branch; element 0 is always NaN.
+        # series_down is accepted for signature compatibility (the legacy
+        # loop never used it either).
+        v = series_up.to_numpy(dtype=float)
+        out = np.full(v.shape, np.nan)
+        mask = ~np.isnan(v)
+        if mask.sum() == 0:
+            return list(out)
+        d = np.where(v[mask] == 1, 1, -1).astype(np.int64)
+        change = np.empty(d.shape, dtype=bool)
+        change[0] = True
+        change[1:] = d[1:] != d[:-1]
+        idx = np.arange(d.shape[0])
+        run_start = np.maximum.accumulate(np.where(change, idx, 0))
+        pos = idx - run_start + 1          # 1-based position within the run
+        out[mask] = d * pos
+        out[0] = np.nan                     # legacy: array[0] = np.nan always
+        return list(out)
+
+    @staticmethod
+    def integrate_updown_loop(series_up, series_down):
+        # Pre-Patch 100 implementation — kept (unregistered) as the parity
+        # reference for integrate_updown. Do not call in production paths.
         array = []
         cnt = 0
         isUp = False;
         for i in range(len(series_up)):
-            #print(series_up.iloc[i], series_down.iloc[i])
             if np.isnan(series_up.iloc[i]):
                 array.append(np.nan)
                 continue

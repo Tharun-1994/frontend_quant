@@ -106,6 +106,9 @@ def _apply_one_stop_update(db: Session, upd: dict[str, Any]) -> int:
         return 0
 
     new_stop = upd.get('newStopPrice')
+    # Patch 108: engine also emits newTpPrice (daily TP maintenance).
+    # .get() tolerates an older engine that doesn't send the key.
+    new_tp = upd.get('newTpPrice')
     source = upd.get('source', 'unknown')
 
     if new_stop is None:
@@ -115,9 +118,16 @@ def _apply_one_stop_update(db: Session, upd: dict[str, Any]) -> int:
     else:
         row.current_stop_price = Decimal(str(new_stop))
 
+    # Patch 108: TP maintenance value — same null-clears semantics.
+    if new_tp is None:
+        row.current_tp_price = None
+    else:
+        row.current_tp_price = Decimal(str(new_tp))
+
     db.flush()
 
     print(f'[stop_updater]   tradeId={row_id} {row.symbol}: '
-          f'current_stop_price={new_stop} (source={source})')
+          f'current_stop_price={new_stop} current_tp_price={new_tp} '
+          f'(source={source})')
 
     return 1

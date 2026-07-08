@@ -36,6 +36,11 @@ class PricePath:
     live_universes_root = r'C:\Tharun\Projects\backtest_data\live_universes'
     sp500_live_base_path = r'C:\Tharun\Projects\backtest_data\live_universes\sp500'
     spy_live_path = r'C:\Tharun\Projects\backtest_data\live_universes\spy'
+    # Patch 92: live path for liquid500 execution.
+    # live_universe_pipeline.py rebuilds this nightly from the
+    # source-of-truth membership at universes/liquid500/liquid500.csv,
+    # pulling ~5 years of Norgate prices for the active members.
+    liquid500_live_base_path = r'C:\Tharun\Projects\backtest_data\live_universes\liquid500'
 
     commonOutputPath = r'C:\Tharun\Projects\backtest_data\outputs'
 

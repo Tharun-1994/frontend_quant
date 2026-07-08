@@ -25,6 +25,7 @@ See design doc §10 known-flaws #7 (calibration study pre-live).
 from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal   # Patch 109
 from pathlib import Path
 from typing import Optional
 
@@ -629,3 +630,181 @@ if __name__ == '__main__':
             print(o)
     finally:
         db.close()
+
+# ──────────────────────────────────────────────────────────────────────
+#  Patch 109 — stop / take-profit HIT resolution for LIVE holdings
+# ──────────────────────────────────────────────────────────────────────
+#
+# The resting STP / TP LMT orders live at IBKR, but nothing fed their
+# executions back — a stop that triggered at the broker left the tradelist
+# LIVE forever (observed: CORZ stop 21.80, day low 21.055, still LIVE).
+# This step simulates those fills from the day's bar, with semantics
+# copied verbatim from the backtest engine so live == backtest:
+#
+#   PortfolioServiceImplV2.stoplossHitLongAtr / ShortAtr:
+#     LONG : open <= stop (gap, unless entered AT the open today)
+#            → exit at OPEN;  elif low <= stop <= high → exit at STOP.
+#     SHORT: open >= stop → OPEN;  elif low <= stop <= high → STOP.
+#   takeProfitHitLong / Short:
+#     entry-day gate: LONG allows TP only if open <= entry_price
+#     (SHORT: open >= entry_price) — same-day gap-through protection.
+#     LONG : open >= tp → OPEN;  elif high >= tp → TP price.
+#     SHORT: open <= tp → OPEN;  elif low  <= tp → TP price.
+#   ORDER: stop checked BEFORE take-profit (BacktestServiceImplV2 day loop
+#   L507 vs L522) — a same-day whipsaw exits at the stop.
+#
+# Uses the values the broker actually had resting: current_stop_price /
+# current_tp_price (nightly-maintained; trader override included).
+# PENDING_EXIT rows are excluded — their maintenance orders were not in
+# the basket (broker_write filters status=LIVE).
+
+
+@dataclass
+class StopTpHitOutcome:
+    """A LIVE position whose resting stop or take-profit filled today."""
+    row_id:      int
+    symbol:      str
+    exit_price:  float
+    exit_reason: str          # 'stop' | 'take_profit' (model vocabulary)
+    price_used:  str          # 'open' (gap) | 'stop price' | 'tp price'
+    profit:      float
+    profit_pct:  float
+    day_count:   int
+
+
+def resolve_stop_tp_hits(
+    db: Session,
+    strategy_id: int,
+    run_date: date,
+    data_root: str,
+    universe: str,
+    rebalance: str,
+) -> list[StopTpHitOutcome]:
+    """Detect stop / TP fills on run_date's bar for LIVE positions."""
+    rows = (
+        db.query(Tradelist)
+        .filter(
+            Tradelist.strategy_id == strategy_id,
+            Tradelist.ledger == 'TRADED',
+            Tradelist.status == 'LIVE',
+        )
+        .order_by(Tradelist.id.asc())
+        .all()
+    )
+    if not rows:
+        return []
+
+    parquet_dir = Path(data_root) / universe
+    prefix      = _prefix_for_rebalance(rebalance)
+    day_opens   = _read_day_series(parquet_dir / f'{prefix}opens.parquet',  run_date)
+    day_highs   = _read_day_series(parquet_dir / f'{prefix}highs.parquet',  run_date)
+    day_lows    = _read_day_series(parquet_dir / f'{prefix}lows.parquet',   run_date)
+
+    outcomes: list[StopTpHitOutcome] = []
+    for row in rows:
+        stop = float(row.current_stop_price) if row.current_stop_price is not None else None
+        tp   = float(getattr(row, 'current_tp_price', None) or 0) or None
+        if stop is None and tp is None:
+            continue
+
+        o = _safe_lookup(day_opens, row.symbol, row.id, 'open')
+        h = _safe_lookup(day_highs, row.symbol, row.id, 'high')
+        l = _safe_lookup(day_lows,  row.symbol, row.id, 'low')
+
+        direction   = (row.direction or 'LONG').upper()
+        entry_price = float(row.entry_price or 0)
+        is_entry_day = (row.entry_date == run_date)
+        # Backtest openIgnore: if we entered AT the open today, the open
+        # gap-branch is suppressed (we cannot be stopped by our own fill).
+        open_gap_allowed = not (
+            is_entry_day and round(o, 2) == round(entry_price, 2)
+        )
+
+        exit_price  = None
+        exit_reason = None
+        price_used  = None
+
+        # ── 1) STOP first (backtest day-loop order) ──
+        if stop is not None:
+            if direction == 'LONG':
+                if o <= stop and open_gap_allowed:
+                    exit_price, price_used = o, 'open'
+                elif l <= stop <= h:
+                    exit_price, price_used = stop, 'stop price'
+            else:  # SHORT: stop sits ABOVE
+                if o >= stop and open_gap_allowed:
+                    exit_price, price_used = o, 'open'
+                elif l <= stop <= h:
+                    exit_price, price_used = stop, 'stop price'
+            if exit_price is not None:
+                exit_reason = 'stop'
+
+        # ── 2) TAKE-PROFIT only if the stop didn't fire ──
+        if exit_price is None and tp is not None:
+            if direction == 'LONG':
+                allow = (o <= entry_price) if is_entry_day else True
+                if allow:
+                    if o >= tp:
+                        exit_price, price_used = o, 'open'
+                    elif h >= tp:
+                        exit_price, price_used = tp, 'tp price'
+            else:  # SHORT: tp sits BELOW
+                allow = (o >= entry_price) if is_entry_day else True
+                if allow:
+                    if o <= tp:
+                        exit_price, price_used = o, 'open'
+                    elif l <= tp:
+                        exit_price, price_used = tp, 'tp price'
+            if exit_price is not None:
+                exit_reason = 'take_profit'
+
+        if exit_price is None:
+            continue
+
+        filled_qty = int(row.filled_qty or 0)
+        if direction == 'LONG':
+            profit = (exit_price - entry_price) * filled_qty
+        else:
+            profit = (entry_price - exit_price) * filled_qty
+        cost       = entry_price * filled_qty
+        profit_pct = (profit / cost) if cost != 0 else 0.0
+        day_count  = ((run_date - row.entry_date).days + 1) if row.entry_date else 0
+
+        outcomes.append(StopTpHitOutcome(
+            row_id=row.id, symbol=row.symbol, exit_price=exit_price,
+            exit_reason=exit_reason, price_used=price_used,
+            profit=profit, profit_pct=profit_pct, day_count=day_count,
+        ))
+        print(f'[fill_resolver]   {exit_reason.upper()} HIT tradeId={row.id} '
+              f'{row.symbol}: level={(stop if exit_reason == "stop" else tp):.4f} '
+              f'bar o={o:.2f} h={h:.2f} l={l:.2f} → exit at {exit_price:.4f} '
+              f'({price_used}), profit={profit:.2f}')
+
+    if outcomes:
+        print(f'[fill_resolver] stop/TP hits resolved: {len(outcomes)}')
+    return outcomes
+
+
+def apply_stop_tp_hits(
+    db: Session,
+    outcomes: list[StopTpHitOutcome],
+    run_date: date,
+) -> int:
+    """Write stop/TP fills: LIVE → EXITED with full exit fields."""
+    for o in outcomes:
+        row = db.query(Tradelist).filter_by(id=o.row_id).first()
+        if row is None:
+            raise ValueError(f'StopTpHitOutcome references id={o.row_id} '
+                             f'but no tradelist row exists')
+        if row.status != 'LIVE':
+            raise ValueError(f'tradeId={o.row_id} expected LIVE, found '
+                             f'{row.status!r} — state diverged')
+        row.status      = 'EXITED'
+        row.exit_date   = run_date
+        row.exit_price  = Decimal(str(round(o.exit_price, 4)))
+        row.exit_reason = o.exit_reason
+        row.profit      = Decimal(str(round(o.profit, 2)))
+        row.profit_pct  = Decimal(str(round(o.profit_pct, 6)))
+        row.day_count   = o.day_count
+    db.flush()
+    return len(outcomes)

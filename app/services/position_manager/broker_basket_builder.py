@@ -94,19 +94,24 @@ def build_entry_rows(
               f"falling back to OPG/MKT")
         time_in_force, ibkr_order_type, lmt_price = "OPG", "MKT", ""
 
-    # Percentage = stoploss_pct (DB stores 20 for 20%). Applies to all order types.
+    # Patch 98: Percentage semantics split by order type (legacy M_Combined format).
+    #   NORMAL          -> parent Percentage = stoploss_pct (IBKR derives the stop
+    #                      from Percentage x fill price; entry price unknown here).
+    #   LIMIT/LIMIT_ATR -> parent Percentage = blank. Absolute prices are known,
+    #                      so the children carry absolute OFFSETS in Percentage:
+    #                      stop child = limit - stop, TP child = tp - limit.
     stoploss_pct = _decimal_to_float(regime.stoploss_pct)
-    percentage = round(stoploss_pct, 4) if stoploss_pct and stoploss_pct > 0 else ""
+    is_priced    = regime_order_type in ("LIMIT", "LIMIT_ATR")
+    if is_priced:
+        percentage = ""
+    else:
+        percentage = round(stoploss_pct, 4) if stoploss_pct and stoploss_pct > 0 else ""
 
-    # Entry AuxPrice = engine stop price for LIMIT/LIMIT_ATR (known at proposal),
-    # blank for NORMAL (fill price unknown until the open).
+    # Patch 98: parent AuxPrice is ALWAYS blank (legacy format). The stop price
+    # lives on the child STP row's AuxPrice, never on the entry row.
     initial_stop_val = _decimal_to_float(tl.initial_stop_price)
-    aux_price = (
-        round(initial_stop_val, 4)
-        if regime_order_type in ("LIMIT", "LIMIT_ATR")
-           and initial_stop_val and initial_stop_val > 0
-        else ""
-    )
+    initial_tp_val   = _decimal_to_float(getattr(tl, "initial_tp_price", None))
+    aux_price = ""
 
     rows: list[dict[str, Any]] = [{
         "Account": account,
@@ -146,6 +151,25 @@ def build_entry_rows(
             stoploss_pct=stoploss_pct,
             parent_order_id=order_id,
             strategy_name=strat.system_code or strat.name,  # Patch 81: system_code
+            limit_price=limit_price_val,  # Patch 98: for Percentage = |limit - stop| offset
+        ))
+
+    # Patch 98: child take-profit LMT row — only for LIMIT/LIMIT_ATR entries
+    # where the engine computed a TP at proposal time (initial_tp_price > 0).
+    # Legacy format: SELL LMT DAY, LmtPrice = TP price, Percentage = |tp - limit|.
+    # NORMAL orders never get a TP child (tpPrice is null — entry price unknown).
+    if is_priced and initial_tp_val and initial_tp_val > 0:
+        child_action = "SELL" if action == "BUY" else "BUY"
+        rows.append(_build_child_tp_row(
+            account=account,
+            basket_tag=basket_tag,
+            action=child_action,
+            quantity=int(tl.intended_qty or 0),
+            symbol=tl.symbol,
+            tp_price=initial_tp_val,
+            limit_price=limit_price_val,
+            parent_order_id=order_id,
+            strategy_name=strat.system_code or strat.name,
         ))
 
     return rows
@@ -297,6 +321,7 @@ def _build_child_stop_row(
     stoploss_pct: float,
     parent_order_id: int,
     strategy_name: str,
+    limit_price: float | None = None,  # Patch 98: entry limit for offset computation
 ) -> dict:
     """Build the child bracket stop row linked to a parent entry order.
 
@@ -324,6 +349,18 @@ def _build_child_stop_row(
     else:
         aux_price = ''   # NORMAL: IBKR derives stop from Percentage × fill_price
 
+    # Patch 98: Percentage on the stop child.
+    #   LIMIT/LIMIT_ATR with both prices known -> absolute offset |limit - stop|
+    #     (legacy M_Combined format, e.g. entry 56.50 / stop 45.20 -> 11.30).
+    #     abs() keeps this direction-agnostic for SHORT (stop above limit).
+    #   NORMAL (or missing prices)             -> stoploss_pct (IBKR needs it).
+    if (order_type_up in ('LIMIT', 'LIMIT_ATR')
+            and limit_price and limit_price > 0
+            and stop_price and stop_price > 0):
+        percentage = round(abs(limit_price - stop_price), 2)
+    else:
+        percentage = round(stoploss_pct, 2) if stoploss_pct else ''
+
     return {
         'Account':       account,
         'BasketTag':     basket_tag,
@@ -342,7 +379,59 @@ def _build_child_stop_row(
         'OCAGroup':      '',
         'Rth':           '=FALSE()',
         'OrderRef':      strategy_name,
-        'Percentage':    round(stoploss_pct, 2) if stoploss_pct else '',
+        'Percentage':    percentage,   # Patch 98: offset for LIMIT/LIMIT_ATR, pct for NORMAL
+        'Rank':          '',
+    }
+
+
+def _build_child_tp_row(
+    account: str,
+    basket_tag: str,
+    action: str,
+    quantity: int,
+    symbol: str,
+    tp_price: float,
+    limit_price: float | None,
+    parent_order_id: int,
+    strategy_name: str,
+) -> dict:
+    """Patch 98: child take-profit LMT row linked to a parent entry order.
+
+    Legacy M_Combined format (verified against Vas's file, e.g. AXTI):
+      OrderType  = LMT, TimeInForce = DAY
+      LmtPrice   = absolute TP price (entry 56.50 -> TP LmtPrice 73.55)
+      AuxPrice   = blank (LMT orders use LmtPrice; AuxPrice is STP-only)
+      Percentage = absolute offset |tp - limit| (73.55 - 56.50 = 17.05)
+      ParentOrderId = entry order id; IBKR OCA-links same-parent children,
+      so the stop and TP cancel each other on fill. OCAGroup stays blank,
+      matching the legacy file.
+
+    Only called for LIMIT/LIMIT_ATR entries with engine-computed tp_price.
+    """
+    if limit_price and limit_price > 0:
+        percentage = round(abs(tp_price - limit_price), 2)
+    else:
+        percentage = ''
+
+    return {
+        'Account':       account,
+        'BasketTag':     basket_tag,
+        'OrderId':       '',
+        'ParentOrderId': parent_order_id,
+        'Action':        action,
+        'Quantity':      quantity,
+        'Symbol':        symbol,
+        'SecType':       'STK',
+        'Exchange':      'SMART/AMEX',
+        'Currency':      'USD',
+        'TimeInForce':   'DAY',
+        'OrderType':     'LMT',
+        'LmtPrice':      round(tp_price, 4),
+        'AuxPrice':      '',
+        'OCAGroup':      '',
+        'Rth':           '=FALSE()',
+        'OrderRef':      strategy_name,
+        'Percentage':    percentage,
         'Rank':          '',
     }
 

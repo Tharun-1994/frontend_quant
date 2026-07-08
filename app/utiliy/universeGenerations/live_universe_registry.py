@@ -14,7 +14,10 @@ indicator-warmup buffer (long enough for SMA-252 / HV-252 to be valid by
 
 from __future__ import annotations
 import datetime as dt
-from app.utiliy.universeGenerations.universe_registry import UniverseSpec
+from app.utiliy.universeGenerations.universe_registry import (
+    UniverseSpec,
+    LIQUID_500_CSV,  # Patch 92: source-of-truth membership path
+)
 
 
 LIVE_REGISTRY = [
@@ -27,5 +30,17 @@ LIVE_REGISTRY = [
         slug='spy',
         universe=['SPY'],
         start_date=dt.date(2021, 1, 1),
+    ),
+    # Patch 92: liquid500 enabled for live execution.
+    # live_universe_pipeline.py extends the source-of-truth membership
+    # (universes/liquid500/liquid500.csv) to today BEFORE this spec is
+    # processed (membership pre-step). The pipeline then reads that
+    # membership and pulls ~5yr of Norgate prices for active members
+    # into live_universes/liquid500/.
+    UniverseSpec(
+        slug='liquid500',
+        universe='Liquid_500',
+        start_date=dt.date(2021, 1, 1),     # ~5 yr rolling window for execution
+        liquid_500_csv=LIQUID_500_CSV,
     ),
 ]

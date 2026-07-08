@@ -29,11 +29,26 @@ class PriceProvider:
         self.padding = padding.upper()
         self.price_adjust = price_adjust.upper()
 
+    @staticmethod
+    def _validate_tickers(tickers):
+        # Patch 114: a numeric 'ticker' is an assetID leak from a corrupt
+        # membership header. norgatedata would PRICE it silently and the
+        # integer column would propagate to live CSVs and exec parquets.
+        bad = [t for t in tickers
+               if not isinstance(t, str) or str(t).strip().isdigit()]
+        if bad:
+            raise RuntimeError(
+                f'{len(bad)} non-ticker (numeric) symbol(s) in the pull '
+                f'list, e.g. {bad[:10]} — membership header is corrupt; '
+                f'restore the universe CSV from backup.')
+
     def get_prices(self, tickers, start_date, end_date=None,
                    interval='D', fields=None, align_to_nyse=True):
         """
         Returns {field_name: DataFrame(dates x tickers)} for the requested fields.
         """
+        self._validate_tickers(tickers)   # Patch 114
+
         fields = fields or self.DEFAULT_FIELDS
         wide = self._pull_multiprocess(tickers, start_date, end_date, interval, fields)
 
@@ -52,6 +67,34 @@ class PriceProvider:
                 # can't raise -- it just drops out.
                 df = df.loc[df.index.intersection(valid_dates)]
             per_field[field] = df.sort_index()
+
+        # Patch 105: freshness logging — THE line that answers "where does
+        # the last date come from". norgatedata.price_timeseries returns AT
+        # MOST what the LOCAL Norgate DB (NDU) has ingested at pull time; it
+        # silently truncates when today's close hasn't landed yet. Log the
+        # achieved ceiling against the requested end so a stale-NDU night is
+        # visible here, at the source, not three steps later.
+        closes = per_field.get('Close')
+        if closes is not None and not closes.empty:
+            achieved = closes.index.max()
+            print(f'[price_provider] Norgate pull: {len(tickers)} tickers, '
+                  f'requested end={end_date}, '
+                  f'ACHIEVED LAST DATE={achieved:%Y-%m-%d} '
+                  f'(= local Norgate DB ceiling at pull time)')
+            # Per-ticker tail distribution: shows whether ALL tickers stop at
+            # the ceiling (DB-wide staleness) or only some lag (per-symbol).
+            _lasts = closes.apply(lambda s: s.last_valid_index())
+            _dist = _lasts.value_counts().sort_index(ascending=False).head(3)
+            for _d, _n in _dist.items():
+                print(f'[price_provider]   {_n} ticker(s) last valid on '
+                      f'{_d:%Y-%m-%d}')
+            if end_date is not None and achieved.date() < end_date:
+                print(f'[price_provider] *** STALE SOURCE WARNING: requested '
+                      f'closes up to {end_date} but the local Norgate DB '
+                      f'only holds {achieved:%Y-%m-%d}. NDU has NOT ingested '
+                      f'the {end_date} close yet — tonight\'s fill '
+                      f'resolution for {end_date} WILL fail. Check Norgate '
+                      f'Data Updater schedule. ***')
         return per_field
 
     def _pull_multiprocess(self, tickers, start_date, end_date, interval, fields):

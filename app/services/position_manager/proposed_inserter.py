@@ -17,6 +17,7 @@ ProposedEntryDto field mapping → tradelist columns:
     orderType      → (not persisted; broker_write decides MKT vs STPMOC)
     limitPrice     → limit_price (null/0 for NORMAL; >0 for LIMIT/LIMIT_ATR)
     stopPrice      → initial_stop_price (null when stoploss disabled)
+    tpPrice        → initial_tp_price (Patch 98; null for NORMAL / no TP)
     rank           → ranking_rank
     score          → ranking_value
     quantity       → intended_qty
@@ -24,8 +25,8 @@ ProposedEntryDto field mapping → tradelist columns:
     sector         → (not persisted; engine-side audit only)
     entryDate, entryTiming, entryReason → (not persisted; informational)
 
-initial_tp_price stays NULL — the Path B response doesn't carry TP fields.
-Strategies that use TP brackets will need a follow-up patch.
+Patch 98: initial_tp_price now populated from the engine's tpPrice field
+(engine Patch 90). NULL for NORMAL orders or when no TP is configured.
 
 Empty proposed_entries is a valid input — engine may legitimately return
 no candidates (no entry signals fire, all candidates already LIVE). C2.6
@@ -241,7 +242,7 @@ def _build_tradelist_row(
     intended_qty     = order.get('quantity')
     intended_capital = order.get('capital')
     initial_stop     = order.get('stopPrice')
-    initial_tp       = None                      # Not in Path B response shape
+    initial_tp       = order.get('tpPrice')     # Patch 98: engine Patch 90 emits tpPrice for LIMIT/LIMIT_ATR
     ranking_value    = order.get('score')
 
     if direction is None:

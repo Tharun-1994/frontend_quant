@@ -129,6 +129,13 @@ class ExecDataRefreshService:
         """
         run_date = self._resolve_run_date(run_date)
         print(f'[exec_data_refresh] starting for run_date={run_date}')
+        # Patch 104: every universe processed below prints a
+        # [exec_data_refresh][freshness] line with the closes date range of
+        # its price source. If any 'closes .. <last>' is BEFORE run_date,
+        # that universe's source (live_universes / Norgate local DB) is
+        # stale and tonight's fill resolution WILL fail for it.
+        print(f'[exec_data_refresh] freshness expectation: every universe '
+              f'source must contain closes up to {run_date}')
 
         strategies = (self.db.query(StrategyBucket)
                       .filter(StrategyBucket.execution_enabled == True)

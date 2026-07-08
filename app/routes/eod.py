@@ -70,10 +70,81 @@ class ExecutionStepResponse(BaseModel):
     substitute_pool_inserted: int
     proposed_deleted: int
     active_regime_id: Optional[int] = None
+    # Patch 115: 'OK' for real runs, 'SKIPPED' for non-trading run_dates.
+    status: str = 'OK'
+    detail: Optional[str] = None
 
 
 # ── Endpoint ──────────────────────────────────────────────────────────────────
 
+
+@router.post(
+    "/regenerate-universe-crsi",
+    summary="Full-history regenerate of one CRSI variant (Patch 100)",
+)
+def regenerate_universe_crsi_route(
+    universe_slug: str,
+    rsi_length: int = 2,
+    updown_length: int = 2,
+    roc_length: int = 100,
+):
+    """Patch 100: back up the stored {slug}_CRSI_R{r}_U{u}_X{x}.csv, delete
+    it, and recompute CRSI over the ENTIRE daily_closes history — flushing
+    any stitch contamination from Norgate TOTALRETURN restatements or (as
+    with liquid500 R3) rows appended under the wrong parameter set. Runs
+    synchronously (vectorized CRSI: seconds, not minutes). Loud-fail: the
+    original file is never removed without a confirmed on-disk backup in
+    _crsi_versions/.
+    """
+    from app.utiliy.universeGenerations.universe_crsi import (
+        regenerate_universe_crsi,
+    )
+    from app.utiliy.universeGenerations.universe_today_refresh import (
+        UNIVERSES_ROOT, resolve_data_date,
+    )
+    from pathlib import Path as _Path
+    try:
+        summary = regenerate_universe_crsi(
+            universe_slug=universe_slug,
+            base_path=_Path(UNIVERSES_ROOT) / universe_slug,
+            end_date=resolve_data_date(None),
+            rsi_length=rsi_length,
+            updown_length=updown_length,
+            roc_length=roc_length,
+        )
+        logger.info("[eod] regenerate-universe-crsi: %s", summary)
+        return summary
+    except Exception as e:
+        logger.exception("[eod] regenerate-universe-crsi failed")
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
+@router.post(
+    "/revert-execution",
+    summary="Revert the latest execution_step run for a strategy+date (Patch 112)",
+)
+def revert_execution_route(strategy_id: int, run_date: date):
+    """Patch 112: restore the tradelist to its state BEFORE the latest
+    successful execution_step run for (strategy_id, run_date), delete that
+    run's PROPOSED/SUBSTITUTE_POOL generation, and mark the run REVERTED.
+    Guard-railed: only the latest successful run per strategy is revertible;
+    runs without a journal (pre-Patch-112) are refused with a clear message.
+    Re-run afterwards via the execution-step endpoint / Run-execution box.
+    """
+    from app.services.position_manager.run_revert import revert_execution
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        return revert_execution(db, strategy_id=strategy_id, run_date=run_date)
+    except ValueError as e:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        db.rollback()
+        logger.exception("[eod] revert-execution failed")
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+    finally:
+        db.close()
 
 @router.post(
     "/execution-step/{strategy_id}",
@@ -107,6 +178,34 @@ def trigger_execution_step(
       400 — data_root folder doesn't exist (exec_data_refresh hasn't run)
       500 — sub-step failure; details in response.detail and eod_run_log
     """
+    # Patch 115: non-trading run_dates are SKIPPED, not attempted. The
+    # "Catch up to today" loop walks CALENDAR days, so weekends/holidays
+    # (e.g. Sun 2026-07-05) reached the runner and died on a KeyError
+    # ("run_date not in DAILY_opens.parquet") with a FAILED log row for a
+    # session that never existed. Skip cleanly so date loops walk through.
+    if request.run_date is not None:
+        import pandas_market_calendars as _mcal
+        try:
+            _is_session = len(_mcal.get_calendar("NYSE").valid_days(
+                request.run_date, request.run_date)) > 0
+        except Exception as _e:
+            _is_session = True   # fail-open: never block a real session
+            logger.warning("[eod] trading-day check failed (%s) - assuming "
+                           "trading day", _e)
+        if not _is_session:
+            print(f"[eod] execution-step SKIPPED: {request.run_date} is not "
+                  f"an NYSE trading day (weekend/holiday)")
+            return ExecutionStepResponse(
+                eod_run_log_id=0, strategy_id=strategy_id,
+                run_date=str(request.run_date),
+                fills_resolved=0, fills_cancelled=0, exits_applied=0,
+                proposed_inserted=0, substitute_pool_inserted=0,
+                proposed_deleted=0,
+                status='SKIPPED',
+                detail=(f'{request.run_date} is not an NYSE trading day '
+                        f'(weekend/holiday) - nothing to run'),
+            )
+
     # Validate strategy exists + is execution_enabled
     strategy = db.query(StrategyBucket).filter_by(id=strategy_id).first()
     if strategy is None:
@@ -253,11 +352,24 @@ def trigger_replay(
     # Step 1 - regenerate parquets for the chosen date (bypass today-rollback)
     if request.refresh_data:
         try:
+            # Patch 92: refresh ONLY this strategy's universe(s). Without the
+            # filter, run_exec_data_refresh defaults to ALL live universes, so
+            # replaying one sp500 strategy would also regenerate liquid500 (and
+            # vice versa). Scope it to what this strategy's regimes actually trade.
+            from app.models.market_regime import MarketRegime
+            _universes = {
+                r.universe
+                for r in db.query(MarketRegime)
+                .filter(MarketRegime.strategy_id == strategy_id)
+                .all()
+                if r.universe
+            }
             run_exec_data_refresh(
                 db,
                 run_date=run_date,
                 write_eod_log=False,
                 start_date=run_date - timedelta(days=650),
+                universe_filter=_universes or None,
             )
         except Exception as e:
             logger.exception("[eod] replay exec_data_refresh failed")

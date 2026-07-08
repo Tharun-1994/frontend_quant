@@ -202,6 +202,7 @@ def db_to_pydantic(db_obj: MarketRegime) -> MarketRegimeBase:
         takeprofit_dollar=db_obj.takeprofit_dollar,
         stoploss_dollar=db_obj.stoploss_dollar,
         stoploss_pct=db_obj.stoploss_pct,
+        stoploss_max_pct=db_obj.stoploss_max_pct,  # Patch 99
         takeprofit_pct=db_obj.takeprofit_pct,
         stoploss_timing=db_obj.stoploss_timing,
         takeprofit_timing=db_obj.takeprofit_timing,

@@ -99,7 +99,17 @@ def _map_row_to_seed_dto(row: Tradelist) -> dict[str, Any]:
         'entryTiming': row.entry_timing or 'open',       # safe default
         'entryReason': 'Entries',                        # backtest default
         'pairId':      row.pair_id,                      # None for Phase 1
-        'currentStopPrice': (float(row.current_stop_price) if row.current_stop_price is not None else None),
+        # Patch 108: send the stop to the engine ONLY when the trader
+        # explicitly overrode it (F2 UI sets stop_overridden). Pre-108 this
+        # sent any non-null value — but stop_updater writes the nightly
+        # recompute back into current_stop_price, so night 2 treated night
+        # 1's computed value as a trader override and FROZE every stop at
+        # its first value forever (all rows showed source=trader_override).
+        # With the flag, non-overridden positions get a fresh ATR recompute
+        # every night — the legacy daily behaviour.
+        'currentStopPrice': (
+            float(row.current_stop_price)
+            if getattr(row, 'stop_overridden', False) and row.current_stop_price is not None
+            else None
+        ),
     }
-
-

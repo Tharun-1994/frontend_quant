@@ -226,15 +226,20 @@ def write_broker_basket(
         oca_counters: dict = {}  # strategy_name → current oca base
         oca_idx = 0              # global increment across all symbols
 
-        # Pool 1: LIVE position OCA (for STP + future LOC/LMT pairs)
-        live_oca: dict = {}      # symbol → OCA number
+        # Pool 1: LIVE position OCA — shared by that position's STP + TP LMT
+        # pair so one filling cancels the other at IB.
+        # Patch 108: keyed by TRADE ID, not symbol. Symbol-keying collided
+        # when two strategies held the same ticker (observed: 50G BKR and
+        # 50Y BKR both got OCA 6286 — one stop filling would cancel the
+        # OTHER strategy's protection).
+        live_oca: dict = {}      # tradelist row id → OCA number
         for row in live_rows:
             strategy   = _get_strategy(row.strategy_id)
             strat_name = strategy.name if strategy else f'sid{row.strategy_id}'
             if strat_name not in oca_counters:
                 oca_counters[strat_name] = _oca_base(strat_name)
             oca_idx += 1
-            live_oca[row.symbol] = oca_counters[strat_name] + oca_idx
+            live_oca[row.id] = oca_counters[strat_name] + oca_idx
 
         # Pool 2: OPG MKT exit OCA (separate numbers from live_oca)
         exit_oca: dict = {}      # symbol → OCA number
@@ -259,7 +264,7 @@ def write_broker_basket(
             stop_val        = round(float(row.current_stop_price), 4)
             direction_upper = (row.direction or 'LONG').upper()
             stop_action     = 'SELL' if direction_upper == 'LONG' else 'BUY'
-            oca_group       = live_oca.get(row.symbol, '')
+            oca_group       = live_oca.get(row.id, '')   # Patch 108: id-keyed
             ws.append([
                 IBKR_ACCOUNT,                                              # Account
                 direction_upper.lower(),                                   # BasketTag
@@ -282,6 +287,44 @@ def write_broker_basket(
                 '',                                                        # Rank
             ])
             summary['stop_rows_written'] += 1
+
+        # 3a-TP (Patch 108): take-profit LMT DAY rows for LIVE positions —
+        # the missing half of the legacy pair. Each TP shares its position's
+        # OCA group with the STP above, so at IB one filling cancels the
+        # other. LmtPrice = current_tp_price (engine-recomputed nightly:
+        # entry ± takeProfitPct × stoplossPct × ATR(today), uncapped).
+        # Emitted as a block AFTER all stops — matches the legacy file
+        # layout (stops block, then LMT block).
+        for row in live_rows:
+            if row.current_tp_price is None:
+                continue
+            strategy        = _get_strategy(row.strategy_id)
+            tp_val          = round(float(row.current_tp_price), 4)
+            direction_upper = (row.direction or 'LONG').upper()
+            tp_action       = 'SELL' if direction_upper == 'LONG' else 'BUY'
+            oca_group       = live_oca.get(row.id, '')
+            ws.append([
+                IBKR_ACCOUNT,                                              # Account
+                direction_upper.lower(),                                   # BasketTag
+                '',                                                        # OrderId
+                '',                                                        # ParentOrderId
+                tp_action,                                                 # Action
+                int(row.filled_qty or 0),                                  # Quantity
+                row.symbol,                                                # Symbol
+                'STK',                                                     # SecType
+                'SMART/AMEX',                                              # Exchange
+                'USD',                                                     # Currency
+                'DAY',                                                     # TimeInForce
+                'LMT',                                                     # OrderType
+                tp_val,                                                    # LmtPrice = TP price
+                '',                                                        # AuxPrice (LMT uses LmtPrice)
+                oca_group,                                                 # OCAGroup = SAME as this row's STP
+                RTH,                                                       # Rth
+                (strategy.system_code or strategy.name) if strategy else f'sid{row.strategy_id}',   # OrderRef
+                '',                                                        # Percentage (blank — standalone)
+                '',                                                        # Rank
+            ])
+            summary['tp_rows_written'] = summary.get('tp_rows_written', 0) + 1
 
         # 3b. Exit OPG MKT SELL rows (positions engine wants to close)
         #     OCAGroup = exit_oca[symbol] — separate from STP OCA pool.
@@ -325,6 +368,7 @@ def write_broker_basket(
         log_row.status        = 'SUCCESS'
         log_row.rows_affected = (
             summary['stop_rows_written']
+            + summary.get('tp_rows_written', 0)   # Patch 108
             + summary['exits_written']
             + summary['orders_written']
         )
@@ -334,6 +378,7 @@ def write_broker_basket(
         print(
             f'[broker_write] === SUCCESS '
             f'stop={summary["stop_rows_written"]} '
+            f'tp={summary.get("tp_rows_written", 0)} '
             f'exits={summary["exits_written"]} '
             f'entries={summary["orders_written"]} '
             f'(promoted {summary["promoted_proposed"]}) → {file_path} ==='

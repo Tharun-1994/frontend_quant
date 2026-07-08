@@ -50,6 +50,16 @@ class VolFilter(BaseModel):
     vol_pct_bear: float = 0.45       # bottom 45% excluded when SPY <= SMA200
     turnover_pct_bull: float = 0.35  # bottom 35% excluded when SPY > SMA200
     turnover_pct_bear: float = 0.05  # bottom 5%  excluded when SPY <= SMA200
+    # Patch 116: configurable regime-SMA lookback and annual recalc trigger.
+    # Defaults preserve legacy behavior: SMA(200), first trading day of January.
+    spy_sma_lookback: int = 200      # SPY SMA lookback for bull/bear detection
+    trigger_month: int = 1           # 1=Jan .. 12=Dec — annual recalc month
+    trigger_tdom: int = 0            # 0-indexed trading day of trigger_month
+    # Patch 116: rolling lookback for avg_volume/avg_turnover parquets.
+    # Legacy uses 21 (vol_avg_lookback/turnover_avg_lookback in
+    # application_phase_1.properties); GeneratePricesIndicators previously
+    # hardcoded 200 — parity bug. Consumed in Patch 117.
+    avg_lookback: int = 21
 
 class SafetyNetItem(BaseModel):
     """One stateful safety net policy.
@@ -105,6 +115,8 @@ class MarketRegimeBase(BaseModel):
     stoploss_type: Optional[str] = None
     takeprofit_type: Optional[str] = None
     stoploss_pct: Optional[float] = None
+    # Patch 99: cap on ATR stop offset, as % of anchor price. None/0 = disabled.
+    stoploss_max_pct: Optional[float] = None
 
     stoploss_dollar: Optional[float] = None
 

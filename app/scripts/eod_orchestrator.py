@@ -42,6 +42,7 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models.eod_run_log import EodRunLog
 from app.models.strategy_bucket import StrategyBucket
+from app.models.market_regime import MarketRegime  # Patch 89: run-time funding gate
 from app.services.exec_data_refresh import run_exec_data_refresh, resolve_data_date
 from app.services.position_manager import run_position_manager
 from app.constants.PricePath import PricePath
@@ -157,6 +158,27 @@ def _run_position_managers_step(
 
     for strategy in strategies:
         print(f'[orchestrator] --- strategy_id={strategy.id} ({strategy.name}) ---')
+        # Patch 89: enable-then-fund gate (moved here from save-strategy). Skip a
+        # live strategy whose regimes aren't all funded (production_capital > 0) —
+        # an unfunded regime sizes to zero / raises in payload_builder. Fund every
+        # regime to trade it live. This does NOT count as a failure.
+        _unfunded = (
+            db.query(MarketRegime)
+            .filter(MarketRegime.strategy_id == strategy.id)
+            .filter(
+                (MarketRegime.production_capital == None)  # noqa: E711
+                | (MarketRegime.production_capital <= 0)
+            )
+            .all()
+        )
+        if _unfunded:
+            _names = ', '.join(f'{r.regime_type} (id={r.id})' for r in _unfunded)
+            print(
+                f'[orchestrator] strategy_id={strategy.id} SKIPPED — '
+                f'{len(_unfunded)} regime(s) missing production_capital: {_names}. '
+                f'Set production_capital > 0 on every regime to trade it live.'
+            )
+            continue
         try:
             result = run_position_manager(
                 db=db,

@@ -101,16 +101,31 @@ INDICATOR_REGISTRY = {
     "crsi": {
         "display_name":         "CRSI",
         "category":             "Momentum",
-        "has_lookback":         False,
+        # Patch 100: lookback == RSI length (the legacy crsi_length; the
+        # "2" in crsi_2). Editable — a new value triggers one-time sync
+        # full-history generation of that variant's CRSI file, which the
+        # nightly/manual variant sweep then keeps current.
+        "has_lookback":         True,
         "default_lookback":     2,
-        "has_params":           False,
-        "params":               [],
-        "params_description":   None,
+        "has_params":           True,
+        "params": [
+            {"key": "updown_length", "label": "UpDown length", "type": "number", "default": 2,   "min": 1},
+            {"key": "roc_length",    "label": "ROC length",    "type": "number", "default": 100, "min": 2},
+        ],
+        "params_description": (
+            "Lookback = RSI length (legacy crsi_length; default 2). "
+            "updown_length (default 2): RSI length applied to the up/down "
+            "streak series. roc_length (default 100): window for the "
+            "percent-rank of 1-day ROC. Each (lookback, updown, roc) combo "
+            "has its own precomputed file, generated on first use and "
+            "refreshed automatically after that."
+        ),
         "kind":                 None,
         "has_range":            False,
         "universe_restriction": "liquid500 and sp500 only",
         "caution_note": (
-            "Lookback is fixed at 2 and cannot be changed. "
+            "First use of a NEW parameter combination generates its CRSI "
+            "file synchronously (a few seconds). "
             "If used with the Russell 3000 universe the indicator silently "
             "produces no signal — rules will never fire. "
             "Only use CRSI when the universe is set to Liquid 500 or S&P 500."

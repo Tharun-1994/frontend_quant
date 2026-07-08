@@ -1,6 +1,6 @@
 from sqlalchemy import (
     Column, Integer, String, Numeric, Date, DateTime,
-    ForeignKey, Text
+    ForeignKey, Text, Boolean
 )
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -73,6 +73,18 @@ class Tradelist(Base):
     # Engine reads current_stop_price for exit checks, NOT initial_stop_price.
     # Webapp-only — manual IBKR sync is the trader's responsibility.
     current_stop_price = Column(Numeric(12, 4), nullable=True)
+    # Patch 108: daily-maintained take-profit price (engine newTpPrice).
+    # broker_write emits a SELL LMT DAY row OCA-paired with the stop.
+    current_tp_price = Column(Numeric(12, 4), nullable=True)
+    # Patch 108: TRUE only when the trader explicitly set the stop via the
+    # F2 UI. Fixes the echo-freeze bug: stop_updater writes the nightly
+    # recompute into current_stop_price, so a non-null value alone CANNOT
+    # mean 'trader override' — that froze every stop at its first value
+    # with source=trader_override forever. Seed sends currentStopPrice to
+    # the engine ONLY when this flag is set; otherwise the engine
+    # recomputes from today's ATR (legacy daily behaviour).
+    stop_overridden = Column(Boolean, nullable=False, default=False,
+                             server_default='0')
 
     # ── Fill data (populated when status → LIVE) ──────────────────────────────
     entry_date = Column(Date, nullable=True)

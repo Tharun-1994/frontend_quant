@@ -41,6 +41,8 @@ from app.Settings import settings
 
 from app.services.position_manager.fill_resolver import (
     resolve_fills,
+    resolve_stop_tp_hits,          # Patch 109
+    apply_stop_tp_hits,            # Patch 109
     FillOutcome,
     resolve_exit_fills,
     ExitFillOutcome,
@@ -94,6 +96,14 @@ def run_position_manager(
     db.commit()   # commit the log row independently so it survives a rollback
                   # of the work transaction. log_row.id is now stable.
 
+    # Patch 112: journal the pre-run state of every row this run may touch,
+    # INSIDE the work transaction — journal and changes commit or roll back
+    # together, so a FAILED run leaves no journal and nothing to revert.
+    from app.services.position_manager.run_revert import (
+        journal_pre_run_state, journal_created_rows,
+    )
+    journal_pre_run_state(db, log_row.id, strategy_id, run_date)
+
     summary: dict[str, Any] = {
         'eod_run_log_id': log_row.id,
         'strategy_id': strategy_id,
@@ -107,6 +117,7 @@ def run_position_manager(
         'proposed_deleted': 0,
         'active_regime_id': None,
         'exit_fills_resolved': 0,
+        'stop_tp_hits_resolved': 0,   # Patch 109
         'hypothetical_fills_resolved': 0,
         # Patch 70: PORTFOLIO trip tracking
         'execution_disabled': False,
@@ -182,6 +193,23 @@ def run_position_manager(
                   f'(non-fatal): {type(e).__name__}: {e}')
             summary['hypothetical_fills_resolved'] = 0
 
+        # ────────── Step A.7 — stop / take-profit hit resolution (Patch 109) ──────────
+        # The resting STP / TP LMT orders at IBKR are simulated against
+        # run_date's bar (backtest-parity semantics: gap-open, else level
+        # price; stop before TP). Runs BEFORE the engine call so a stopped-
+        # out position is never seeded as a holding for today's decisions.
+        # Loud-fail: a bad state here means live == broker is broken.
+        hit_outcomes = resolve_stop_tp_hits(
+            db,
+            strategy_id=strategy_id,
+            run_date=run_date,
+            data_root=data_root,
+            universe=universe,
+            rebalance=rebalance,
+        )
+        apply_stop_tp_hits(db, hit_outcomes, run_date=run_date)
+        summary['stop_tp_hits_resolved'] = len(hit_outcomes)
+
         # ────────── Step B — engine call ──────────
         live_holdings = build_live_holdings_seed(db, strategy_id=strategy_id)
         payload = build_execution_step_payload(
@@ -246,6 +274,10 @@ def run_position_manager(
         summary['proposed_inserted']         = d_result['proposed_inserted']
         summary['substitute_pool_inserted']  = d_result['substitute_pool_inserted']
         summary['proposed_deleted']          = d_result['deleted']
+
+        # Patch 112: journal the ids this run created (current PROPOSED/POOL
+        # generation) so revert can delete exactly this run's output.
+        journal_created_rows(db, log_row.id, strategy_id, run_date)
         summary['active_regime_id']          = d_result['active_regime_id']
 
         # ────────── Commit ──────────

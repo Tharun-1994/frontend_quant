@@ -38,6 +38,9 @@ class MarketRegime(Base):
     portfolio_stoploss_anchor = Column(String(20), nullable=True)
     takeprofit_type = Column(String(10))
     stoploss_pct = Column(Numeric(5, 2))
+    # Patch 99: max stop distance as % of anchor price (limit at entry,
+    # entry_price for held positions). ATR offset capped at this. NULL/0 = off.
+    stoploss_max_pct = Column(Numeric(5, 2), nullable=True)
     stoploss_dollar = Column(Numeric(5, 2))
     takeprofit_pct = Column(Numeric(5, 2))
 
