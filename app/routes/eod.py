@@ -302,10 +302,13 @@ def trigger_replay(
              PREVIOUS session decided for today — so Step 2's PM can resolve their fills,
              and emit M_Combined_{run_date}.xlsx. Makes each replay a complete
              promote->resolve->decide session. Skipped when promote_and_write=False.
-    Step 1 - exec_data_refresh(run_date): regenerate Norgate parquets for THIS exact
-             date. The today-rollback in resolve_data_date is bypassed (same as
-             run_nightly_test) because the operator explicitly chose a historical date.
-             Skipped when refresh_data=False (parquets already present).
+    Step 1 - exec_data_refresh(run_date): regenerate Norgate parquets for the
+             resolved data date. Patch 151: the whole replay session resolves
+             its date ONCE up front via resolve_data_date — a today-or-future
+             date before the Norgate post hour (22:00) rolls back to the last
+             completed NYSE trading day, exactly like the nightly. Historical
+             dates pass through unchanged, so the existing replay contract
+             holds. Skipped when refresh_data=False (parquets already present).
     Step 2 - run_position_manager(run_date): the REAL Position Manager. Resolves fills,
              applies exits, inserts PROPOSED/SUBSTITUTE_POOL - all DB writes. One session.
     Step 3 - recalc_and_store(): rebuild the equity curve so the chart matches the new
@@ -321,13 +324,26 @@ def trigger_replay(
     """
     # Imported inside the function (matches the retry endpoint pattern, avoids any
     # import-order coupling between eod.py and the exec_data_refresh service).
-    from app.services.exec_data_refresh import run_exec_data_refresh
+    from app.services.exec_data_refresh import (run_exec_data_refresh,
+                                                resolve_data_date)
 
     strategy = db.query(StrategyBucket).filter_by(id=strategy_id).first()
     if strategy is None:
         raise HTTPException(404, detail=f"Strategy id={strategy_id} not found")
 
     run_date = request.run_date
+    # Patch 151: resolve to the DATA date the same way the nightly does.
+    # Before 22:00, "run for today" means a session on the last completed
+    # trading day (Norgate hasn't posted yet) — the refresh service already
+    # resolves internally (exec_data_refresh._resolve_run_date), so without
+    # this the route's data_root/PM used a folder name the refresh never
+    # wrote (the 20260709-vs-20260708 mismatch). One resolution, used by
+    # every step below.
+    resolved = resolve_data_date(run_date)
+    if resolved != run_date:
+        logger.info(f"[eod] replay run_date {run_date} resolved to data date "
+                    f"{resolved} (before Norgate post hour)")
+        run_date = resolved
     logger.info(
         f"[eod] replay strategy_id={strategy_id} ({strategy.name}) run_date={run_date} "
         f"refresh_data={request.refresh_data} recompute_equity={request.recompute_equity} "
@@ -388,14 +404,26 @@ def trigger_replay(
         )
 
     # Step 2 - the REAL Position Manager (DB writes)
+    # Patch 150: Combined books replay through their evening leg instead —
+    # the same divert the nightly orchestrator does (Patch 148). Steps
+    # 0/1/3 stay shared because they are strategy-agnostic: broker_write
+    # already promoted this date's strategy rows, exec_data_refresh was
+    # scoped to this strategy's universe(s), and the equity recompute
+    # reads the tradelist generically.
     try:
-        summary = run_position_manager(
-            db=db, strategy_id=strategy_id, run_date=run_date, data_root=data_root,
-        )
+        if (strategy.market_regime_type or '').strip().lower() == 'combined':
+            from app.services.combined.execute import execute_combined
+            summary = execute_combined(
+                db, strategy_id, run_date=run_date, data_root=data_root,
+            )
+        else:
+            summary = run_position_manager(
+                db=db, strategy_id=strategy_id, run_date=run_date, data_root=data_root,
+            )
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("[eod] replay run_position_manager failed")
+        logger.exception("[eod] replay execution step failed")
         raise HTTPException(500, detail=f"{type(e).__name__}: {e}")
 
     # Step 3 - rebuild the equity curve (non-fatal; PM writes are already committed)
@@ -412,6 +440,7 @@ def trigger_replay(
     return {
         "strategy_id": strategy_id,
         "strategy_name": strategy.name,
+        "requested_run_date": request.run_date.isoformat(),   # Patch 151
         "run_date": run_date.isoformat(),
         "refreshed_data": request.refresh_data,
         "broker": broker,

@@ -139,6 +139,7 @@ class MarketRegimeBase(BaseModel):
     order_type: Optional[str] = None
     limit_pct: Optional[float] = None
     atr_limit_lookback: Optional[int] = None
+    limit_params: Optional[Dict[str, float]] = None   # Patch 167 v2 (LIMIT_HV et al.)
 
     universe: Optional[str] = None
     capital: Optional[float] = None

@@ -215,6 +215,10 @@ def db_to_pydantic(db_obj: MarketRegime) -> MarketRegimeBase:
         order_type=db_obj.order_type,
         limit_pct=db_obj.limit_pct,
         atr_limit_lookback=db_obj.atr_limit_lookback,
+        # Patch 167 v2: parse limit params for backtest payloads AND the
+        # exec payload (payload_builder serializes regimes via this converter).
+        limit_params=(json.loads(db_obj.limit_params_json)
+                      if getattr(db_obj, 'limit_params_json', None) else None),
         universe=db_obj.universe,
         capital=db_obj.capital,
         production_capital=(
@@ -288,6 +292,16 @@ async def run_backtest(strategy_data: StrategyRequest):
     try:
         if strategy_data.market_regime_type == "Individual ETFs - Simple":
             await backtest_service.run_tradestation_backtest(strategy_data=strategy_data)
+        elif strategy_data.market_regime_type == "Combined":
+            # Patch 121: Combined = orchestration-only — simulate via the
+            # combined allocator (member tradelists), never the Java engine.
+            from app.routes.combined import simulate as combined_simulate
+            from app.database import SessionLocal
+            db = SessionLocal()
+            try:
+                return combined_simulate(strategy_data.id, db)
+            finally:
+                db.close()
         else:
             await backtest_service.run_java_backtest(strategy_data=strategy_data)
     except HTTPException:

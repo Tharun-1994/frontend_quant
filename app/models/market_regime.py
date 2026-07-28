@@ -5,7 +5,6 @@ from sqlalchemy.sql import func
 from app.database import Base
 
 
-
 class MarketRegime(Base):
     __tablename__ = "marketregime"
 
@@ -57,6 +56,10 @@ class MarketRegime(Base):
 
     order_type = Column(String(10))
     limit_pct = Column(Numeric(5, 2))
+    # Patch 167 v2: mode-specific limit parameters as JSON (vol_filter_json
+    # precedent). LIMIT_HV keys: hv_lookback, divider, lower, upper,
+    # reduction. Future LIMIT_* modes add keys here -- no new columns.
+    limit_params_json = Column(Text, nullable=True)
     atr_limit_lookback = Column(Numeric(5, 2))
 
     universe = Column(String(50))
@@ -71,16 +74,16 @@ class MarketRegime(Base):
     # execution wiring (step 3) sizes off this and falls back to `capital`
     # above when NULL. Backtest sizing always uses `capital` (untouched).
     production_capital = Column(Numeric(18, 2), nullable=True)
-    
+
     created_at = Column(DateTime, server_default=func.now())
     max_time = Column(Integer)
 
     banned_months = Column(String, default="[]")  # stored as JSON string: "[1,2,6]"
 
     market_trend_rules_tree_json = Column(Text, nullable=True)
-    volatility_rules_tree_json   = Column(Text, nullable=True)
-    entry_rules_tree_json        = Column(Text, nullable=True)
-    exit_rules_tree_json         = Column(Text, nullable=True)
+    volatility_rules_tree_json = Column(Text, nullable=True)
+    entry_rules_tree_json = Column(Text, nullable=True)
+    exit_rules_tree_json = Column(Text, nullable=True)
 
     freeze_rules_tree_json = Column(Text, nullable=True)
     resume_rules_tree_json = Column(Text, nullable=True)
@@ -123,13 +126,13 @@ class MarketRegime(Base):
     # Per-ticker static metadata: {ticker: {risk, color, hl_threshold}}
     ticker_classification = Column(Text, nullable=True)
     # Per-pair construction rule tree + match_action (e.g. swap_short_leg)
-    pairing_entry_rules   = Column(Text, nullable=True)
+    pairing_entry_rules = Column(Text, nullable=True)
     # Per-pair rule-driven exit tree + match_action (unused by LRA, schema present)
-    pairing_exit_rules    = Column(Text, nullable=True)
+    pairing_exit_rules = Column(Text, nullable=True)
     # Generic sizing policy: {mode: "capital_div_slots" | "fixed_dollar_per_leg", params: {...}}
-    sizing_policy         = Column(Text, nullable=True)
+    sizing_policy = Column(Text, nullable=True)
     # Pair lifecycle policy (non-rule): {max_hold_sessions, force_close, profit_exit}
-    pair_exit_policy      = Column(Text, nullable=True)
+    pair_exit_policy = Column(Text, nullable=True)
 
     # LRA Patch 34: per-leg entry rule trees for LONGSHORT pairs.
     # Each is the same JSON shape as Patch 28's evaluator expects:

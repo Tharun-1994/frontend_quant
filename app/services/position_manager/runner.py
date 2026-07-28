@@ -38,6 +38,8 @@ from app.models.market_regime import MarketRegime
 from app.models.tradelist import Tradelist
 from app.models.eod_run_log import EodRunLog
 from app.Settings import settings
+from pathlib import Path                                        # Patch 181
+import pandas as pd                                             # Patch 181
 
 from app.services.position_manager.fill_resolver import (
     resolve_fills,
@@ -209,6 +211,17 @@ def run_position_manager(
         )
         apply_stop_tp_hits(db, hit_outcomes, run_date=run_date)
         summary['stop_tp_hits_resolved'] = len(hit_outcomes)
+
+        # ────────── Step A.8 Patch 181 — eod_close day-trade completion ──────────
+        # Day-trade books (regime exit_timing eod_close/close) go flat at the
+        # broker via the basket's MOC child, but nothing reflected that into
+        # the tradelist: rows filled today stayed LIVE forever and re-seeded
+        # tomorrow as phantom holdings. Flip today's surviving LIVE entries
+        # to EXITED at the day's close, direction-correct profit (A.5
+        # conventions). Runs AFTER A.7 so stop-hits keep their stop prices.
+        summary['eod_close_completed'] = _apply_eod_close_completion(
+            db, strategy_id=strategy_id, run_date=run_date,
+            data_root=data_root, universe=universe, rebalance=rebalance)
 
         # ────────── Step B — engine call ──────────
         live_holdings = build_live_holdings_seed(db, strategy_id=strategy_id)
@@ -533,3 +546,92 @@ if __name__ == '__main__':
             print(f'  {k}: {v}')
     finally:
         db.close()
+
+def run_resolution_steps(db: Session, *, strategy_id: int, run_date: date,
+                         data_root: str, universe: str, rebalance: str) -> dict:
+    """Patch 182: Steps A / A.5 / A.7 / A.8 ONLY -- no engine call, no
+    proposal insert. Combined books (engine cannot evaluate a combined
+    payload) call this from execute_combined so their PENDING_FILL rows
+    finally resolve; the Patch-148/150 divert had skipped resolution
+    entirely (the zombie-PENDING root cause, strategies 34 + 35)."""
+    summary: dict = {}
+    outcomes = resolve_fills(db, strategy_id=strategy_id, run_date=run_date,
+                             data_root=data_root, universe=universe,
+                             rebalance=rebalance)
+    _apply_fill_outcomes(db, outcomes, run_date)
+    summary['fills_resolved']  = sum(1 for o in outcomes if o.filled)
+    summary['fills_cancelled'] = sum(1 for o in outcomes if not o.filled)
+    exit_outcomes = resolve_exit_fills(db, strategy_id=strategy_id,
+                                       run_date=run_date, data_root=data_root,
+                                       universe=universe, rebalance=rebalance)
+    _apply_exit_fill_outcomes(db, exit_outcomes)
+    summary['exit_fills_resolved'] = len(exit_outcomes)
+    hit_outcomes = resolve_stop_tp_hits(db, strategy_id=strategy_id,
+                                        run_date=run_date, data_root=data_root,
+                                        universe=universe, rebalance=rebalance)
+    apply_stop_tp_hits(db, hit_outcomes, run_date=run_date)
+    summary['stop_tp_hits_resolved'] = len(hit_outcomes)
+    summary['eod_close_completed'] = _apply_eod_close_completion(
+        db, strategy_id=strategy_id, run_date=run_date,
+        data_root=data_root, universe=universe, rebalance=rebalance)
+    print(f'[runner] resolution-only (combined) strategy={strategy_id} '
+          f'{run_date}: {summary}')
+    return summary
+
+
+def _apply_eod_close_completion(db: Session, *, strategy_id: int, run_date: date,
+                                data_root: str, universe: str, rebalance: str) -> int:
+    """Patch 181 (Step A.8): complete eod_close day-trades in the DB.
+
+    For strategies whose any-regime exit_timing is eod_close/close, every
+    row still LIVE with entry_date == run_date is flipped to EXITED at the
+    day's CLOSE. Profit is direction-correct (SHORT: entry - exit), same
+    conventions as Step A.5. Missing close for a symbol -> row left LIVE
+    and named loudly (never silently guessed)."""
+    regimes = db.query(MarketRegime).filter_by(strategy_id=strategy_id).all()
+    # Patch 183: 'eod_close' ONLY. Plain 'close' means rule-exits execute
+    # at the close on the day their rule fires (swing books like
+    # Lsmr_static) -- force-flattening their same-day fills here would
+    # have destroyed every swing position at the first bell.
+    if not any((r.exit_timing or '').lower() == 'eod_close'
+               for r in regimes):
+        return 0
+    rows = (db.query(Tradelist)
+            .filter(Tradelist.strategy_id == strategy_id,
+                    Tradelist.ledger == 'TRADED',
+                    Tradelist.status == 'LIVE',
+                    Tradelist.entry_date == run_date)
+            .order_by(Tradelist.id.asc()).all())
+    if not rows:
+        return 0
+    from app.services.position_manager.fill_resolver import (
+        _read_day_series, _prefix_for_rebalance)
+    day_closes = _read_day_series(
+        Path(data_root) / universe
+        / f'{_prefix_for_rebalance(rebalance)}closes.parquet', run_date)
+    n = 0
+    for row in rows:
+        close = day_closes.get(row.symbol)
+        if close is None or pd.isna(close):
+            print(f'[runner] Step A.8: no close for {row.symbol} on '
+                  f'{run_date} -- left LIVE (investigate universe data)')
+            continue
+        exit_price = float(close)
+        entry      = float(row.entry_price or 0)
+        qty        = int(row.filled_qty or 0)
+        if (row.direction or 'LONG').upper() == 'SHORT':
+            profit = (entry - exit_price) * qty
+        else:
+            profit = (exit_price - entry) * qty
+        cost = entry * qty
+        row.status      = 'EXITED'
+        row.exit_date   = run_date
+        row.exit_price  = exit_price
+        row.exit_reason = 'eod_close'
+        row.profit      = round(profit, 2)
+        row.profit_pct  = (profit / cost) if cost else 0.0
+        row.day_count   = 1
+        n += 1
+    db.flush()
+    print(f'[runner] Step A.8: {n} eod_close day-trade(s) EXITED at close')
+    return n

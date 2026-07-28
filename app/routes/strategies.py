@@ -317,6 +317,10 @@ def save_market_regime(marketregime: MarketRegimeBase, db: Session = Depends(get
     db_obj.vol_filter_json    = (
         json.dumps(marketregime.vol_filter.dict()) if marketregime.vol_filter else None
     )
+    # Patch 167 v2: limit-mode parameters (plain dict, mode-agnostic)
+    db_obj.limit_params_json  = (
+        json.dumps(marketregime.limit_params) if marketregime.limit_params else None
+    )
 
     # Rule trees — normalise then serialise
     marketregime.market_trend_rules_tree = normalize_rules_tree(

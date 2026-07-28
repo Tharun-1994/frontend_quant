@@ -699,6 +699,18 @@ def resolve_stop_tp_hits(
     day_opens   = _read_day_series(parquet_dir / f'{prefix}opens.parquet',  run_date)
     day_highs   = _read_day_series(parquet_dir / f'{prefix}highs.parquet',  run_date)
     day_lows    = _read_day_series(parquet_dir / f'{prefix}lows.parquet',   run_date)
+    # Patch 184: EOD-timed stops are STPMOC at the broker -- evaluated on
+    # the CLOSE, filled at the close. Simulating them intraday stopped
+    # EOD books out on any dip-through day and made the DB diverge from
+    # the broker on exactly the days that matter. Timing source mirrors
+    # broker_basket_builder: the strategy's first regime, default EOD.
+    day_closes  = _read_day_series(parquet_dir / f'{prefix}closes.parquet', run_date)
+    _regime0  = (db.query(MarketRegime)
+                 .filter_by(strategy_id=strategy_id).first())
+    _stop_eod = (((getattr(_regime0, 'stoploss_timing', None) or 'EOD')
+                  .upper() == 'EOD') if _regime0 is not None else False)
+    _tp_eod   = (((getattr(_regime0, 'takeprofit_timing', None) or '')
+                  .upper() == 'EOD') if _regime0 is not None else False)
 
     outcomes: list[StopTpHitOutcome] = []
     for row in rows:
@@ -710,6 +722,7 @@ def resolve_stop_tp_hits(
         o = _safe_lookup(day_opens, row.symbol, row.id, 'open')
         h = _safe_lookup(day_highs, row.symbol, row.id, 'high')
         l = _safe_lookup(day_lows,  row.symbol, row.id, 'low')
+        c = _safe_lookup(day_closes, row.symbol, row.id, 'close')   # Patch 184
 
         direction   = (row.direction or 'LONG').upper()
         entry_price = float(row.entry_price or 0)
@@ -726,7 +739,12 @@ def resolve_stop_tp_hits(
 
         # ── 1) STOP first (backtest day-loop order) ──
         if stop is not None:
-            if direction == 'LONG':
+            if _stop_eod:
+                # Patch 184: STPMOC semantics -- close-evaluated, close-filled.
+                if ((direction == 'LONG' and c <= stop)
+                        or (direction != 'LONG' and c >= stop)):
+                    exit_price, price_used = c, 'close (EOD stop)'
+            elif direction == 'LONG':
                 if o <= stop and open_gap_allowed:
                     exit_price, price_used = o, 'open'
                 elif l <= stop <= h:
@@ -741,7 +759,12 @@ def resolve_stop_tp_hits(
 
         # ── 2) TAKE-PROFIT only if the stop didn't fire ──
         if exit_price is None and tp is not None:
-            if direction == 'LONG':
+            if _tp_eod:
+                # Patch 184: EOD-timed TP mirrors the stop -- close only.
+                if ((direction == 'LONG' and c >= tp)
+                        or (direction != 'LONG' and c <= tp)):
+                    exit_price, price_used = c, 'close (EOD tp)'
+            elif direction == 'LONG':
                 allow = (o <= entry_price) if is_entry_day else True
                 if allow:
                     if o >= tp:

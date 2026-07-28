@@ -41,6 +41,11 @@ class PricePath:
     # source-of-truth membership at universes/liquid500/liquid500.csv,
     # pulling ~5 years of Norgate prices for the active members.
     liquid500_live_base_path = r'C:\Tharun\Projects\backtest_data\live_universes\liquid500'
+    # Patch 150: live path for russell3000 execution (CRDT members 21/22/23
+    # + the M_LDEQ_54 combined book). Rebuilt nightly by
+    # live_universe_pipeline.py from the Patch-148 registry spec
+    # ('Russell 3000 Current & Past', start 2021-01-01).
+    russell3000_live_base_path = r'C:\Tharun\Projects\backtest_data\live_universes\russell3000'
 
     commonOutputPath = r'C:\Tharun\Projects\backtest_data\outputs'
 

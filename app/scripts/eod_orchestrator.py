@@ -179,6 +179,48 @@ def _run_position_managers_step(
                 f'Set production_capital > 0 on every regime to trade it live.'
             )
             continue
+        # Patch 148: Combined books do not run the per-strategy PM — their
+        # regime type has no engine payload. Their evening leg (member scout
+        # steps -> gate -> production-profile allocation -> PROPOSED rows) is
+        # combined/execute.execute_combined; the morning broker_write flow
+        # then treats strategy-34 rows identically to every other book.
+        if (strategy.market_regime_type or '').strip().lower() == 'combined':
+            from app.services.combined.execute import execute_combined
+            log_row = EodRunLog(run_date=run_date, step='execution_step',
+                                strategy_id=strategy.id, status='RUNNING')
+            db.add(log_row)
+            db.commit()
+            try:
+                audit = execute_combined(db, strategy.id, run_date=run_date,
+                                         data_root=data_root)
+                log_row.status = 'SUCCESS'
+                log_row.finished_at = datetime.now()
+                log_row.rows_affected = int(
+                    audit.get('proposed_inserted', 0)
+                    + audit.get('substitute_pool_inserted', 0))
+                db.commit()
+                n_success += 1
+                print(
+                    f'[orchestrator] strategy_id={strategy.id} SUCCESS '
+                    f"(combined): gate="
+                    f"{'open' if audit['gate']['open'] else 'CLOSED'}"
+                    f"/{audit['gate']['label']} "
+                    f"proposed={audit['proposed_inserted']}/"
+                    f"{audit['substitute_pool_inserted']} "
+                    f'eod_run_log_id={log_row.id}'
+                )
+            except Exception as e:
+                db.rollback()   # execute_combined rolled back its own writes
+                log_row.status = 'FAILED'
+                log_row.finished_at = datetime.now()
+                log_row.error_msg = f'{type(e).__name__}: {e}'
+                db.commit()
+                n_failed += 1
+                print(
+                    f'[orchestrator] strategy_id={strategy.id} FAILED '
+                    f'(combined): {type(e).__name__}: {e}'
+                )
+            continue
         try:
             result = run_position_manager(
                 db=db,

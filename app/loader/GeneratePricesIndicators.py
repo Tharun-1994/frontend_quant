@@ -387,10 +387,11 @@ class GeneratePricesIndicators:
                     FUNCTION_MAPPER['daily_range_pct'],
                     Highs=price_data[f'{rebalance}_highs'],
                     Lows=price_data[f'{rebalance}_lows'])
-            elif rule.indicator == 'consec_down':
-                # Pure price-pattern derived series — ignores lookback param
+            elif rule.indicator in ('consec_down', 'consec_up'):
+                # Pure price-pattern derived series — ignores lookback param.
+                # Patch 166: consec_up added (mirror streak, up closes).
                 result = GeneratePricesIndicators.call_indicator(
-                    FUNCTION_MAPPER['consec_down'],
+                    FUNCTION_MAPPER[rule.indicator],
                     prices=price_data[f'{rebalance}_closes'])
             elif rule.indicator in ('adx', 'atr'):
                 result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER[rule.indicator],
@@ -687,7 +688,9 @@ class GeneratePricesIndicators:
     def generate(marketRegime: MarketRegimeBase, strategy: StrategyBucket,
                  production: bool = False, run_date=None,
                  start_date=None, lookback_buffer_days: int = 500,
-                 test_mode: bool = False):
+                 test_mode: bool = False,
+                 preloaded_raw=None,          # Patch 174: per-run shared dict
+                 already_written=None):       # Patch 174: per-universe write-once
         """Compute indicator parquets for one (regime, strategy) pair.
 
         C1 Patch 3: when production=True, the final uploadCommonPath call
@@ -738,6 +741,13 @@ class GeneratePricesIndicators:
                         # source-of-truth membership extended to today
                         # via extend_liquid500_membership pre-step).
                         loader = PriceDataLoader(PricePath.liquid500_live_base_path)
+                    elif univ == 'russell3000':
+                        # Patch 150: live execution path for russell3000.
+                        # Source: live_universes/russell3000/ (rebuilt
+                        # nightly by live_universe_pipeline.py from the
+                        # Patch-148 registry spec). Same mechanism as
+                        # sp500 / liquid500 above.
+                        loader = PriceDataLoader(PricePath.russell3000_live_base_path)
                     else:
                         raise ValueError(
                             f"Universe '{univ}' has no live path configured. "
@@ -751,13 +761,35 @@ class GeneratePricesIndicators:
                     if univ == 'sp500':
                         loader = PriceDataLoader(PricePath.sp500base_path)
                     elif univ.lower() == 'spy':
-                        loader = PriceDataLoader(PricePath.spy_path)
+                        # Patch 156: LIVE source even in test_mode. The spy
+                        # universe here is an EXECUTION dependency (the
+                        # combined's market gate, Patch 154 fan-in), and
+                        # execution data = short rolling window generated to
+                        # the last date. The static spy folder is frozen at
+                        # 2021-12-31 (Patch-155 guard evidence: DAILY_spy /
+                        # spy_universe both end 2021-12-31), so the replay
+                        # window can never be satisfied from it. Safe by
+                        # evidence: no strategy replays the spy universe
+                        # historically — any such replay would have failed
+                        # on the same 2021 wall. live_universes/spy is
+                        # rebuilt nightly (LIVE_REGISTRY slug 'spy').
+                        loader = PriceDataLoader(PricePath.spy_live_path)
                     elif univ == 'liquid500':
                         # Patch 91: replay/test_mode path for liquid500 — full
                         # historical folder (same source as the backtest branch
                         # below), so any historical date is reachable. The nightly
                         # (production) already handles liquid500 via Patch 92.
                         loader = PriceDataLoader(PricePath.liquid500base_path)
+                    elif univ == 'russell3000':
+                        # Patch 150: replay/test_mode path for russell3000 —
+                        # full historical backtest folder (same source as
+                        # the backtest branch below) so any historical date
+                        # is reachable; mirrors the liquid500 Patch-91
+                        # pattern. NOTE: only as fresh as its last
+                        # regeneration — the [freshness] line below prints
+                        # coverage, and the combined gate asserts loudly if
+                        # the run_date bar is missing.
+                        loader = PriceDataLoader(PricePath.russell3000base_path)
                     else:
                         raise ValueError(f"Unknown universe for test_mode: {univ}")
                 else:
@@ -778,7 +810,16 @@ class GeneratePricesIndicators:
                     else:
                         raise ValueError(f"Unknown universe: {univ}")
 
-                price_data = loader.load_all(rebalance=strategy.rebalance, universe=univ)
+                # Patch 174: within-run universe cache. Loading a 10k-column
+                # universe dominates refresh time and is identical per pair.
+                # Shallow copy is safe: the Patch-21 slice REASSIGNS
+                # (price_data[k] = sliced) and never mutates shared frames.
+                if preloaded_raw is not None:
+                    price_data = dict(preloaded_raw)
+                    print(f'[GeneratePricesIndicators] Patch 174: reusing '
+                          f'shared universe data ({len(price_data)} frames)')
+                else:
+                    price_data = loader.load_all(rebalance=strategy.rebalance, universe=univ)
 
                 # Patch 104: freshness visibility. Print exactly what price
                 # coverage this run is building indicators from, per universe,
@@ -833,6 +874,7 @@ class GeneratePricesIndicators:
                     _cutoff = pd.Timestamp(_start - _dt_p21.timedelta(days=lookback_buffer_days))
                     _kept = 0
                     _dropped = 0
+                    _emptied = []   # Patch 155: frames the slice reduced to ZERO rows
                     for _k, _df in list(price_data.items()):
                         # Slice only DataFrames/Series whose index is datetime-based.
                         # Non-temporal entries (sector mappings, scalars) untouched.
@@ -842,6 +884,33 @@ class GeneratePricesIndicators:
                             price_data[_k] = _sliced
                             _kept += len(_sliced)
                             _dropped += (_before - len(_sliced))
+                            if _before > 0 and len(_sliced) == 0:
+                                _emptied.append(
+                                    (_k, _df.index.min(), _df.index.max()))
+                    # Patch 155: loud failure over a downstream IndexError.
+                    # A frame emptied by the slice means the SOURCE folder's
+                    # coverage ends before the execution window — every
+                    # consumer after this point is doomed to a confusing
+                    # empty-array error. Name the keys, their real coverage,
+                    # and the cutoff so the operator sees the data problem,
+                    # not a symptom three layers down.
+                    if _emptied:
+                        _detail = "; ".join(
+                            f"{k} covers {a.date()}..{b.date()}"
+                            for k, a, b in _emptied[:5])
+                        _more = (f" (+{len(_emptied)-5} more)"
+                                 if len(_emptied) > 5 else "")
+                        raise ValueError(
+                            f"Patch-21 slice (cutoff {_cutoff.date()}, "
+                            f"start_date {_start} - {lookback_buffer_days}d "
+                            f"buffer) emptied {len(_emptied)} frame(s) for "
+                            f"universe='{univ}': {_detail}{_more}. The "
+                            f"source folder's data ends before the "
+                            f"execution window. Live mode: check the "
+                            f"nightly live_universes refresh for this "
+                            f"universe. Replay/test_mode: the STATIC "
+                            f"universe folder must be regenerated to cover "
+                            f"the replay date.")
                     print(f'[GeneratePricesIndicators] Patch 21 slice: cutoff={_cutoff.date()} '
                           f'kept_rows={_kept} dropped_rows={_dropped} '
                           f'(start_date={_start}, buffer={lookback_buffer_days}d)')
@@ -876,6 +945,13 @@ class GeneratePricesIndicators:
                                 print(f"[WARNING] Could not load closes for ticker '{ticker}': {e}")
 
                 indictor_Set = set()
+                # Patch 174: when reusing the shared per-run dict, seed the
+                # dedup set with keys earlier pairs computed -- every
+                # branch's existing `if key in indicator_set: continue`
+                # guard then gives cross-pair reuse for free.
+                if preloaded_raw is not None:
+                    indictor_Set.update(k for k in price_data.keys()
+                                        if not k.startswith('_p174'))
 
                 # # This is For LIMIT ATR PRODUCTION
                 GeneratePricesIndicators._compute_atr_limits(marketRegime, price_data, strategy.rebalance,
@@ -971,15 +1047,65 @@ class GeneratePricesIndicators:
                             f"vol_filter.avg_lookback must be a positive int, got {_avg_lb!r} "
                             f"(strategy={strategy.name})")
                     _rebalance = strategy.rebalance
-                    _turnovers = price_data.get(f'{_rebalance}_turnovers')
-                    _unadj = price_data.get(f'{_rebalance}_unadjusted_closes')
-                    _closes = price_data.get(f'{_rebalance}_closes')
-                    _volumes = price_data.get(f'{_rebalance}_volumes')
-                    if _turnovers is not None and _unadj is not None:
-                        unadj_vol = _turnovers / _unadj
-                        price_data['avg_volume'] = unadj_vol.rolling(_avg_lb).mean()
-                    if _closes is not None and _volumes is not None:
-                        price_data['avg_turnover'] = (_closes * _volumes).rolling(_avg_lb).mean()
+                    # Patch 165: LOUD failure over silent skip. The previous
+                    # `.get(...) is not None` guards quietly produced NO
+                    # parquets when a source key was missing — the vol
+                    # filter then ran inert in the engine with zero trace
+                    # (this file's own Patch-117 comment promises the
+                    # opposite). load_all provides every one of these
+                    # unconditionally, so a miss means the source CSVs are
+                    # absent from the universe base path — say so.
+                    _vol_srcs = (f'{_rebalance}_turnovers',
+                                 f'{_rebalance}_unadjusted_closes',
+                                 f'{_rebalance}_closes',
+                                 f'{_rebalance}_volumes',
+                                 f'{_rebalance}_closes_spy')
+                    _missing = [k for k in _vol_srcs
+                                if price_data.get(k) is None]
+                    if _missing:
+                        raise ValueError(
+                            f"vol_filter enabled but source frame(s) "
+                            f"missing from price_data: {_missing} "
+                            f"(strategy={strategy.name}, universe={univ}). "
+                            f"PriceDataLoader.load_all provides these "
+                            f"unconditionally — a miss means the source "
+                            f"CSVs are absent from the universe base path.")
+                    unadj_vol = (price_data[f'{_rebalance}_turnovers']
+                                 / price_data[f'{_rebalance}_unadjusted_closes'])
+                    price_data['avg_volume'] = unadj_vol.rolling(_avg_lb).mean()
+                    price_data['avg_turnover'] = (
+                        price_data[f'{_rebalance}_closes']
+                        * price_data[f'{_rebalance}_volumes']
+                    ).rolling(_avg_lb).mean()
+                # Patch 167 v2: LIMIT_HV entry-price frame. Params ride
+                # regime.limit_params (JSON column) -- keys: hv_lookback,
+                # divider, lower, upper, reduction. The engine loads the
+                # FIXED name 'hv_limit.parquet' (PriceLoader hvLimitEnabled)
+                # and computes limit = close x (1 +/- clamp(HV(lb)/divider,
+                # lower, upper)/100 x reduction). Loud on missing keys --
+                # an inert limit mode must never ship silently.
+                if (getattr(marketRegime, 'order_type', '') or '').upper() == 'LIMIT_HV':
+                    _lp = getattr(marketRegime, 'limit_params', None) or {}
+                    _need = ('hv_lookback', 'divider', 'lower', 'upper', 'reduction')
+                    _bad = [k for k in _need
+                            if _lp.get(k) is None or float(_lp[k]) <= 0]
+                    if _bad:
+                        raise ValueError(
+                            f"order_type=LIMIT_HV but limit_params key(s) "
+                            f"missing/invalid: {_bad} (strategy={strategy.name}). "
+                            f"Required keys: {list(_need)}.")
+                    price_data['hv_limit'] = GeneratePricesIndicators.call_indicator(
+                        FUNCTION_MAPPER['hv'],
+                        prices=price_data[f'{strategy.rebalance}_closes'],
+                        n=int(_lp['hv_lookback']))
+
+                    # Patch 165: engine-name alias. The engine's PriceLoader
+                    # reads 'closes_spy.parquet' (unprefixed); the loader
+                    # key here is '{rebalance}_closes_spy', which the writer
+                    # would emit as 'DAILY_closes_spy.parquet' — a file the
+                    # engine never looks at. Alias so uploadCommonPath
+                    # writes the name the engine loads.
+                    price_data['closes_spy'] = price_data[f'{_rebalance}_closes_spy']
 
                 # C1 Patch 3: forward production + run_date so the loader
                 # can branch to the exec_data folder. Backtest callers
@@ -993,7 +1119,9 @@ class GeneratePricesIndicators:
                     production=production,
                     run_date=run_date,
                     excluded_tickers=_excluded,
+                    already_written=already_written,   # Patch 174
                 )
+                return price_data   # Patch 174: caller promotes into the run cache
 
     @staticmethod
     def _compute_trading_dates(price_data, rebalance, univ, strategy, loader, run_date=None):

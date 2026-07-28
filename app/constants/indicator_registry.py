@@ -373,6 +373,24 @@ INDICATOR_REGISTRY = {
             _avail(EQUITY_REGIMES, [ENTRY], LHS, sort_order=1)
         ),
     },
+    # Patch 166: mirror of consec_down -- consecutive UP-close streak
+    "consec_up": {
+        "display_name":         "Consecutive Up Days",
+        "category":             "Price Pattern",
+        "has_lookback":         False,
+        "default_lookback":     0,
+        "has_params":           False,
+        "params":               [],
+        "params_description":   None,
+        "kind":                 None,
+        "has_range":            False,
+        "universe_restriction": None,
+        "caution_note":         "Returns streak length ending today. Use `>= N` to require N consecutive up days.",
+        "sort_order":           2,
+        "availability": (
+            _avail(EQUITY_REGIMES, [ENTRY], LHS, sort_order=2)
+        ),
+    },
 
     # ── Price ─────────────────────────────────────────────────────────────────
 
@@ -599,5 +617,6 @@ INDICATOR_REGISTRY = {
                 _avail(EQUITY_REGIMES, [ENTRY], LHS, sort_order=8)
             ),
         },
+
 
 }

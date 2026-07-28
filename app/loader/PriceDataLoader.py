@@ -149,7 +149,8 @@ class PriceDataLoader:
         return {'sector_mapping': df}
 
     def uploadCommonPath(self, price_data={}, universe="", strategy_name="",
-                         production=False, run_date=None, excluded_tickers=None):
+                         production=False, run_date=None, excluded_tickers=None,
+                         already_written=None):   # Patch 174: per-universe write-once
         """Write computed parquets.
 
         C1 Patch 2: when production=True, writes to the universe-shared,
@@ -176,7 +177,18 @@ class PriceDataLoader:
         else:
             out_dir = PricePath.getBacktestInputPath(universe=universe, strategy_name=strategy_name)
 
+        _p174_written = 0
+        _p174_skipped = 0
         for k in price_data.keys():
+            # Patch 174: internal markers never hit disk; keys another pair
+            # already wrote this run are skipped (content-identical by the
+            # shared-cache construction -- rewriting base wides 4x per
+            # refresh was pure parquet IO).
+            if k.startswith('_p174'):
+                continue
+            if already_written is not None and k in already_written:
+                _p174_skipped += 1
+                continue
             df = price_data[k]
             # Apply ticker exclusions — drop columns for excluded tickers.
             # Covers both backtest (production=False) and execution (production=True).
@@ -188,6 +200,12 @@ class PriceDataLoader:
                 if universe.lower() != 'spy':
                     df = df.astype("float32")
             df.to_parquet(f'{out_dir}/{k}.parquet')
+            _p174_written += 1
+            if already_written is not None:
+                already_written.add(k)
+        if already_written is not None:
+            print(f'[PriceDataLoader] Patch 174: wrote {_p174_written} '
+                  f'parquet(s), skipped {_p174_skipped} already-written')
 
     def get_trading_dates(self, start_trading=None, end_trading=None,
                           use_data=True, daily_closes=pd.Series(), all_dates=[], max_lookback=255, rebalance='daily'):

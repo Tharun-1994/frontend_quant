@@ -67,6 +67,13 @@ class Tradelist(Base):
     ranking_rank = Column(Integer, nullable=True)
     # Where this candidate ranked among the day's signals (1 = best).
     ranking_value = Column(Numeric(18, 4), nullable=True)
+    # Patch 162/163: which SUBSYSTEM of a combined book produced this row —
+    # the member strategy's system_code VERBATIM (legacy scheme:
+    # M_LDEQ_54A / _54B / _54C; REQUIRED on combined members, enforced
+    # loud in combined/execute.py). It becomes the basket OrderRef as-is
+    # (Patch 163) on PROPOSED and SUBSTITUTE_POOL rows alike. NULL for
+    # every non-combined strategy — their OrderRef stays exactly Patch 81.
+    subsystem_ref = Column(String(10), nullable=True)
     # The indicator value used for ranking (audit).
 
     # ── Stop adjustment (trader-editable on Holdings page) ────────────────────

@@ -808,6 +808,22 @@ class IndicatorCalculator:
 
     @staticmethod
     @register
+    def ConsecutiveUp(prices, n=0):
+        """Patch 166: mirror of ConsecutiveDown. For each date, returns the
+        length of the consecutive-UP-close streak ENDING on that date.
+        An up day is close[t] > close[t-1].
+        Example: closes [10, 11, 12, 13, 12] -> streak [0, 1, 2, 3, 0].
+
+        Use rule: consec_up >= N to require an N-day up streak.
+        The `n` parameter is unused (lookback ignored -- pure derived series).
+        """
+        is_up = prices.diff() > 0
+        return is_up.apply(
+            lambda col: col.astype(int).groupby((~col).cumsum()).cumsum()
+        )
+
+    @staticmethod
+    @register
     def RollingVolatilityMedian(prices, vol_lookback=20, median_lookback=252):
         # Patch 75: ddof=0 to match RollingVolatilityUnshifted — the LHS vol the pause compares
         # against. The gate is a RATIO test (vol > multiple * median); std(ddof=0) and std(ddof=1)
