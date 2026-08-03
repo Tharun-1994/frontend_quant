@@ -53,6 +53,6 @@ Thumbs.db
 *.html
 *.csv
 *.csv#
-*.txt
+
 *.pkl
 *.xlsx#
