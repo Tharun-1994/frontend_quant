@@ -5,7 +5,6 @@ from sqlalchemy.sql import func
 from app.database import Base
 
 
-
 class MarketRegime(Base):
     __tablename__ = "marketregime"
 
@@ -38,6 +37,9 @@ class MarketRegime(Base):
     portfolio_stoploss_anchor = Column(String(20), nullable=True)
     takeprofit_type = Column(String(10))
     stoploss_pct = Column(Numeric(5, 2))
+    # Patch 99: max stop distance as % of anchor price (limit at entry,
+    # entry_price for held positions). ATR offset capped at this. NULL/0 = off.
+    stoploss_max_pct = Column(Numeric(5, 2), nullable=True)
     stoploss_dollar = Column(Numeric(5, 2))
     takeprofit_pct = Column(Numeric(5, 2))
 
@@ -54,6 +56,10 @@ class MarketRegime(Base):
 
     order_type = Column(String(10))
     limit_pct = Column(Numeric(5, 2))
+    # Patch 167 v2: mode-specific limit parameters as JSON (vol_filter_json
+    # precedent). LIMIT_HV keys: hv_lookback, divider, lower, upper,
+    # reduction. Future LIMIT_* modes add keys here -- no new columns.
+    limit_params_json = Column(Text, nullable=True)
     atr_limit_lookback = Column(Numeric(5, 2))
 
     universe = Column(String(50))
@@ -68,16 +74,16 @@ class MarketRegime(Base):
     # execution wiring (step 3) sizes off this and falls back to `capital`
     # above when NULL. Backtest sizing always uses `capital` (untouched).
     production_capital = Column(Numeric(18, 2), nullable=True)
-    
+
     created_at = Column(DateTime, server_default=func.now())
     max_time = Column(Integer)
 
     banned_months = Column(String, default="[]")  # stored as JSON string: "[1,2,6]"
 
     market_trend_rules_tree_json = Column(Text, nullable=True)
-    volatility_rules_tree_json   = Column(Text, nullable=True)
-    entry_rules_tree_json        = Column(Text, nullable=True)
-    exit_rules_tree_json         = Column(Text, nullable=True)
+    volatility_rules_tree_json = Column(Text, nullable=True)
+    entry_rules_tree_json = Column(Text, nullable=True)
+    exit_rules_tree_json = Column(Text, nullable=True)
 
     freeze_rules_tree_json = Column(Text, nullable=True)
     resume_rules_tree_json = Column(Text, nullable=True)
@@ -120,13 +126,13 @@ class MarketRegime(Base):
     # Per-ticker static metadata: {ticker: {risk, color, hl_threshold}}
     ticker_classification = Column(Text, nullable=True)
     # Per-pair construction rule tree + match_action (e.g. swap_short_leg)
-    pairing_entry_rules   = Column(Text, nullable=True)
+    pairing_entry_rules = Column(Text, nullable=True)
     # Per-pair rule-driven exit tree + match_action (unused by LRA, schema present)
-    pairing_exit_rules    = Column(Text, nullable=True)
+    pairing_exit_rules = Column(Text, nullable=True)
     # Generic sizing policy: {mode: "capital_div_slots" | "fixed_dollar_per_leg", params: {...}}
-    sizing_policy         = Column(Text, nullable=True)
+    sizing_policy = Column(Text, nullable=True)
     # Pair lifecycle policy (non-rule): {max_hold_sessions, force_close, profit_exit}
-    pair_exit_policy      = Column(Text, nullable=True)
+    pair_exit_policy = Column(Text, nullable=True)
 
     # LRA Patch 34: per-leg entry rule trees for LONGSHORT pairs.
     # Each is the same JSON shape as Patch 28's evaluator expects:
@@ -141,6 +147,16 @@ class MarketRegime(Base):
     # this regime. Set per-regime; SignalEngine reads this when building the
     # pool that the trader can promote to active via overlay-apply.
     substitute_pool_size = Column(Integer, nullable=True, default=20)
+
+    # Hold Blackout: after a stock exits, block it from re-entry for
+    # hold_blackout_days days. 0/NULL disables. hold_blackout_unit selects how
+    # the days are counted in the engine ('calendar' or 'trading').
+    hold_blackout_days = Column(Integer, nullable=True, default=0)
+    hold_blackout_unit = Column(String(10), nullable=True, default="calendar")
+
+    # Rebalance weekday: restrict entries to one weekday (0=Mon .. 4=Fri).
+    # NULL = every day (default). With max_time this yields weekly rotation.
+    rebalance_weekday = Column(Integer, nullable=True, default=None)
 
     # # RELATIONSHIP
     strategy = relationship("StrategyBucket", back_populates="regimes")

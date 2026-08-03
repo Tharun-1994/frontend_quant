@@ -42,6 +42,18 @@ class DailyDataGenerator:
         closes = fields.get('Close')
         last_bar = None if closes is None or closes.empty else closes.index.max()
 
+        # Patch 105: one-line verdict per universe. If last_bar < end_date the
+        # ceiling came from the local Norgate DB (see the [price_provider]
+        # STALE SOURCE WARNING above for the per-ticker breakdown).
+        if last_bar is not None:
+            _short = (last_bar.date() < end_date) if end_date else False
+            print(f'[daily_data_generator] {spec.slug}: requested '
+                  f'[{spec.start_date} .. {end_date}], built '
+                  f'{len(provider.tickers)} tickers, last bar '
+                  f'{last_bar:%Y-%m-%d}'
+                  + (f'  <-- SHORT of requested {end_date}' if _short else
+                     '  (matches requested end)'))
+
         manifest = {
             'slug': spec.slug,
             'universe': str(spec.universe),

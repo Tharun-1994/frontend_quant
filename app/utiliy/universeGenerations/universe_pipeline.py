@@ -130,8 +130,15 @@ if __name__ == '__main__':
         synthetic_processor=processor,
     )
 
-    # First verification run: one universe, diff against your existing folder.
-    pipeline.run(only={'liquid500'})
-
-    # Nightly (Task Scheduler): refresh the whole registry.
+    # Patch 92: nightly Step 1b (universe_pipeline) is now a no-op by default.
+    # liquid500, sp500, sp1500, russell3000, spy are all handled by
+    # live_universe_pipeline.py (Step 1) which mirrors the append-only
+    # discipline of the manual "Update today's prices" button. Running a
+    # full rebuild here every night would re-pull ~28 years of Norgate
+    # data per spec — the inefficiency RT specifically called out.
+    # Uncomment a line below ONLY when a manual full-rebuild is needed
+    # for a specific slug (e.g. one-time seed, post-corruption restore).
+    # pipeline.run()
+    # pipeline.run(only={'sp1500'})
     # pipeline.run(only={'russell3000'})
+    # pipeline.run(only={'lra_14'})

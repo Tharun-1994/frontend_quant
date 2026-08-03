@@ -13,6 +13,5 @@ from app.models.trader_observation import TraderObservation
 from app.models.tradelist_stop_history import TradelistStopHistory
 from app.models.live_equity_snapshot import LiveEquitySnapshot
 from app.models.universe_ticker_exclusion import UniverseTickerExclusion
-
-
-
+from app.models.tradelist_run_journal import TradelistRunJournal  # Patch 112
+from app.models.combined_system import CombinedMember, CombinedConfig  # Patch 119

@@ -266,6 +266,17 @@ def _read_membership(csv_path: Path) -> pd.DataFrame:
     df['Date'] = pd.to_datetime(df['Date'])
     df.set_index('Date', inplace=True)
     df = df.loc[:, ~df.columns.str.startswith('Unnamed')]
+    # Patch 114: refuse to extend a corrupt membership file. Numeric
+    # column headers are Norgate assetIDs / headerless-CSV artefacts —
+    # extending and re-writing would cement the corruption.
+    _bad = [c for c in df.columns
+            if not isinstance(c, str) or c.strip().isdigit()]
+    if _bad:
+        raise RuntimeError(
+            f'membership header corrupt in {csv_path}: {len(_bad)} '
+            f'numeric column(s), e.g. {_bad[:10]} — restore from backup '
+            f'before extending.')
+
     return df
 
 

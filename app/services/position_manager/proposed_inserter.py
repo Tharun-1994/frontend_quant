@@ -17,6 +17,7 @@ ProposedEntryDto field mapping → tradelist columns:
     orderType      → (not persisted; broker_write decides MKT vs STPMOC)
     limitPrice     → limit_price (null/0 for NORMAL; >0 for LIMIT/LIMIT_ATR)
     stopPrice      → initial_stop_price (null when stoploss disabled)
+    tpPrice        → initial_tp_price (Patch 98; null for NORMAL / no TP)
     rank           → ranking_rank
     score          → ranking_value
     quantity       → intended_qty
@@ -24,8 +25,8 @@ ProposedEntryDto field mapping → tradelist columns:
     sector         → (not persisted; engine-side audit only)
     entryDate, entryTiming, entryReason → (not persisted; informational)
 
-initial_tp_price stays NULL — the Path B response doesn't carry TP fields.
-Strategies that use TP brackets will need a follow-up patch.
+Patch 98: initial_tp_price now populated from the engine's tpPrice field
+(engine Patch 90). NULL for NORMAL orders or when no TP is configured.
 
 Empty proposed_entries is a valid input — engine may legitimately return
 no candidates (no entry signals fire, all candidates already LIVE). C2.6
@@ -52,6 +53,7 @@ def insert_proposed_rows(
     proposed_orders: list[dict[str, Any]],
     active_regime_label: Optional[str],
     proposal_date: date,
+    substitute_orders: Optional[list[dict[str, Any]]] = None,   # Patch 162
 ) -> dict[str, int]:
     """Insert PROPOSED + SUBSTITUTE_POOL rows for one strategy.
 
@@ -70,6 +72,17 @@ def insert_proposed_rows(
                              last bar. None/empty for single-regime
                              strategies with empty market_trend_rules.
         proposal_date: the data date — the night PM created these rows.
+        substitute_orders: Patch 162 — when provided (combined books), the
+                           SUBSTITUTE_POOL rows come from THIS list (each
+                           member's own engine substitutePool, already
+                           capped by that member's substitute_pool_size and
+                           tagged with its system_code), capped again by
+                           this strategy's regime.substitute_pool_size.
+                           When None (every pre-existing caller), the pool
+                           is the tail-slice of proposed_orders — byte-
+                           identical legacy behaviour. This separation also
+                           prevents pool entries leaking into PROPOSED when
+                           the proposed list is shorter than free_slots.
 
     Returns:
         Dict with counts:
@@ -138,7 +151,11 @@ def insert_proposed_rows(
     # When free_slots = 0 (all slots occupied by LIVE positions), insert
     # nothing — there are no PROPOSED entries for Vas to substitute.
     proposed_slice = proposed_orders[:free_slots]
-    pool_slice = proposed_orders[free_slots:free_slots + pool_size] if free_slots > 0 else []
+    if substitute_orders is not None:
+        # Patch 162: explicit substitute channel (combined books).
+        pool_slice = substitute_orders[:pool_size] if free_slots > 0 else []
+    else:
+        pool_slice = proposed_orders[free_slots:free_slots + pool_size] if free_slots > 0 else []
 
     # 5. Insert
     proposed_inserted = 0
@@ -241,8 +258,9 @@ def _build_tradelist_row(
     intended_qty     = order.get('quantity')
     intended_capital = order.get('capital')
     initial_stop     = order.get('stopPrice')
-    initial_tp       = None                      # Not in Path B response shape
+    initial_tp       = order.get('tpPrice')     # Patch 98: engine Patch 90 emits tpPrice for LIMIT/LIMIT_ATR
     ranking_value    = order.get('score')
+    subsystem_ref    = order.get('subsystemRef')   # Patch 162: combined books only
 
     if direction is None:
         raise ValueError(
@@ -279,6 +297,7 @@ def _build_tradelist_row(
         initial_tp_price=Decimal(str(initial_tp)) if initial_tp is not None else None,
         ranking_rank=int(rank) if rank is not None else None,
         ranking_value=Decimal(str(ranking_value)) if ranking_value is not None else None,
+        subsystem_ref=subsystem_ref,               # Patch 162: NULL for non-combined
         # Fill/exit columns left NULL; populated later in their lifecycle
     )
 

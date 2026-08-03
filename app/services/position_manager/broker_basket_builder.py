@@ -94,19 +94,24 @@ def build_entry_rows(
               f"falling back to OPG/MKT")
         time_in_force, ibkr_order_type, lmt_price = "OPG", "MKT", ""
 
-    # Percentage = stoploss_pct (DB stores 20 for 20%). Applies to all order types.
+    # Patch 98: Percentage semantics split by order type (legacy M_Combined format).
+    #   NORMAL          -> parent Percentage = stoploss_pct (IBKR derives the stop
+    #                      from Percentage x fill price; entry price unknown here).
+    #   LIMIT/LIMIT_ATR -> parent Percentage = blank. Absolute prices are known,
+    #                      so the children carry absolute OFFSETS in Percentage:
+    #                      stop child = limit - stop, TP child = tp - limit.
     stoploss_pct = _decimal_to_float(regime.stoploss_pct)
-    percentage = round(stoploss_pct, 4) if stoploss_pct and stoploss_pct > 0 else ""
+    is_priced    = regime_order_type in ("LIMIT", "LIMIT_ATR")
+    if is_priced:
+        percentage = ""
+    else:
+        percentage = round(stoploss_pct, 4) if stoploss_pct and stoploss_pct > 0 else ""
 
-    # Entry AuxPrice = engine stop price for LIMIT/LIMIT_ATR (known at proposal),
-    # blank for NORMAL (fill price unknown until the open).
+    # Patch 98: parent AuxPrice is ALWAYS blank (legacy format). The stop price
+    # lives on the child STP row's AuxPrice, never on the entry row.
     initial_stop_val = _decimal_to_float(tl.initial_stop_price)
-    aux_price = (
-        round(initial_stop_val, 4)
-        if regime_order_type in ("LIMIT", "LIMIT_ATR")
-           and initial_stop_val and initial_stop_val > 0
-        else ""
-    )
+    initial_tp_val   = _decimal_to_float(getattr(tl, "initial_tp_price", None))
+    aux_price = ""
 
     rows: list[dict[str, Any]] = [{
         "Account": account,
@@ -125,14 +130,40 @@ def build_entry_rows(
         "AuxPrice": aux_price,
         "OCAGroup": "",
         "Rth": "=FALSE()",
-        "OrderRef": strat.system_code or strat.name,  # Patch 81: system_code (Vas short code), not name
+        "OrderRef": _order_ref_for(strat, tl),  # Patch 81 base + Patch 162 subsystem suffix
         "Percentage": percentage,
         "Rank": int(tl.ranking_rank) if tl.ranking_rank is not None else "",
     }]
 
+    # Patch 163: unconditional END-OF-DAY close for day-trade books.
+    # exit_timing='eod_close' with an INTRADAY stop yields a plain STP
+    # child (fires intraday) — nothing closed the position at the bell.
+    # The legacy M_LDEQ_54 basket does it with an explicit SELL MOC
+    # sibling (legacy layout kept: parent LMT, MOC, STP). Guards against
+    # double-closing: a close-timed entry (already MOC/LOC) or an
+    # EOD-timed stop (child becomes STPMOC, which IS the close) skip it —
+    # every pre-existing book is byte-identical.
+    stoploss_timing = (regime.stoploss_timing or "EOD").upper()
+    exit_timing_lc  = (regime.exit_timing or "").lower()
+    add_moc_close = (
+        exit_timing_lc == "eod_close"
+        and entry_timing != "close"
+        and stoploss_timing != "EOD"
+    )
+    if add_moc_close:
+        moc_action = "SELL" if action == "BUY" else "BUY"
+        rows.append(_build_child_moc_row(
+            account=account,
+            basket_tag=basket_tag,
+            action=moc_action,
+            quantity=int(tl.intended_qty or 0),
+            symbol=tl.symbol,
+            parent_order_id=order_id,
+            order_ref=_order_ref_for(strat, tl),
+        ))
+
     # Child bracket stop — only when a stoploss is configured.
     if stoploss_pct and stoploss_pct > 0:
-        stoploss_timing = (regime.stoploss_timing or "EOD").upper()
         child_action    = "SELL" if action == "BUY" else "BUY"
         rows.append(_build_child_stop_row(
             account=account,
@@ -145,7 +176,30 @@ def build_entry_rows(
             stop_price=initial_stop_val,
             stoploss_pct=stoploss_pct,
             parent_order_id=order_id,
-            strategy_name=strat.system_code or strat.name,  # Patch 81: system_code
+            strategy_name=_order_ref_for(strat, tl),  # Patch 162: children share the suffixed ref
+            limit_price=limit_price_val,  # Patch 98: for Percentage = |limit - stop| offset
+            # Patch 163: the legacy-54 3-row bracket carries the stoploss
+            # PERCENTAGE (e.g. 7) on the STP child; 2-row books keep the
+            # Patch-98 offset format.
+            percentage_override=(stoploss_pct if add_moc_close else None),
+        ))
+
+    # Patch 98: child take-profit LMT row — only for LIMIT/LIMIT_ATR entries
+    # where the engine computed a TP at proposal time (initial_tp_price > 0).
+    # Legacy format: SELL LMT DAY, LmtPrice = TP price, Percentage = |tp - limit|.
+    # NORMAL orders never get a TP child (tpPrice is null — entry price unknown).
+    if is_priced and initial_tp_val and initial_tp_val > 0:
+        child_action = "SELL" if action == "BUY" else "BUY"
+        rows.append(_build_child_tp_row(
+            account=account,
+            basket_tag=basket_tag,
+            action=child_action,
+            quantity=int(tl.intended_qty or 0),
+            symbol=tl.symbol,
+            tp_price=initial_tp_val,
+            limit_price=limit_price_val,
+            parent_order_id=order_id,
+            strategy_name=_order_ref_for(strat, tl),  # Patch 162
         ))
 
     return rows
@@ -285,6 +339,59 @@ def substitute_to_csv_string(basket: list[dict[str, Any]]) -> str:
     return buf.getvalue()
 
 
+def _order_ref_for(strat, tl) -> str:
+    """Patch 162: OrderRef = the strategy's base ref (system_code or name —
+    Patch 81) plus, for combined-book rows, the subsystem's system_code
+    carried on the tradelist row (subsystem_ref: '1'/'5'/'6' for the CRDT
+    members): M_LDEQ_54_1 / _5 / _6 — on PROPOSED and SUBSTITUTE rows
+    alike, so every broker line names its subsystem. Non-combined rows
+    have subsystem_ref NULL and keep the exact Patch-81 ref. Children
+    share the parent's ref (grouping)."""
+    # Patch 163 (corrects 162's composition): the legacy M_LDEQ_54 basket
+    # shows the subsystem ref VERBATIM as the whole OrderRef (M_LDEQ_54A —
+    # not base+"_"+code, which 162 produced as M_LDEQ_54_M_LDEQ_54A). The
+    # member's system_code, carried per row as subsystem_ref, IS the ref.
+    sub = getattr(tl, 'subsystem_ref', None)
+    if sub:
+        return str(sub)
+    return strat.system_code or strat.name
+
+
+def _build_child_moc_row(
+    account: str,
+    basket_tag: str,
+    action: str,
+    quantity: int,
+    symbol: str,
+    parent_order_id: int,
+    order_ref: str,
+) -> dict:
+    """Patch 163: unconditional end-of-day close sibling (SELL MOC DAY) for
+    eod_close day-trade books — matches the legacy M_LDEQ_54 layout exactly
+    (all price fields blank; the closing auction sets the price)."""
+    return {
+        'Account':       account,
+        'BasketTag':     basket_tag,
+        'OrderId':       '',
+        'ParentOrderId': parent_order_id,
+        'Action':        action,
+        'Quantity':      quantity,
+        'Symbol':        symbol,
+        'SecType':       'STK',
+        'Exchange':      'SMART/AMEX',
+        'Currency':      'USD',
+        'TimeInForce':   'DAY',
+        'OrderType':     'MOC',
+        'LmtPrice':      '',
+        'AuxPrice':      '',
+        'OCAGroup':      '',
+        'Rth':           '=FALSE()',
+        'OrderRef':      order_ref,
+        'Percentage':    '',
+        'Rank':          '',
+    }
+
+
 def _build_child_stop_row(
     account: str,
     basket_tag: str,
@@ -297,6 +404,8 @@ def _build_child_stop_row(
     stoploss_pct: float,
     parent_order_id: int,
     strategy_name: str,
+    limit_price: float | None = None,  # Patch 98: entry limit for offset computation
+    percentage_override: float | None = None,  # Patch 163: pct-on-child (legacy 54)
 ) -> dict:
     """Build the child bracket stop row linked to a parent entry order.
 
@@ -324,6 +433,24 @@ def _build_child_stop_row(
     else:
         aux_price = ''   # NORMAL: IBKR derives stop from Percentage × fill_price
 
+    # Patch 98: Percentage on the stop child.
+    #   LIMIT/LIMIT_ATR with both prices known -> absolute offset |limit - stop|
+    #     (legacy M_Combined format, e.g. entry 56.50 / stop 45.20 -> 11.30).
+    #     abs() keeps this direction-agnostic for SHORT (stop above limit).
+    #   NORMAL (or missing prices)             -> stoploss_pct (IBKR needs it).
+    if percentage_override is not None and percentage_override > 0:
+        # Patch 163: the eod_close 3-row bracket (legacy M_LDEQ_54) carries
+        # the stoploss PERCENTAGE here (legacy sample: 7). The offset
+        # format below stays for every existing 2-row LIMIT book —
+        # verified against the production M_Combined xlsx (Patch 98).
+        percentage = round(percentage_override, 2)
+    elif (order_type_up in ('LIMIT', 'LIMIT_ATR')
+            and limit_price and limit_price > 0
+            and stop_price and stop_price > 0):
+        percentage = round(abs(limit_price - stop_price), 2)
+    else:
+        percentage = round(stoploss_pct, 2) if stoploss_pct else ''
+
     return {
         'Account':       account,
         'BasketTag':     basket_tag,
@@ -342,7 +469,59 @@ def _build_child_stop_row(
         'OCAGroup':      '',
         'Rth':           '=FALSE()',
         'OrderRef':      strategy_name,
-        'Percentage':    round(stoploss_pct, 2) if stoploss_pct else '',
+        'Percentage':    percentage,   # Patch 98: offset for LIMIT/LIMIT_ATR, pct for NORMAL
+        'Rank':          '',
+    }
+
+
+def _build_child_tp_row(
+    account: str,
+    basket_tag: str,
+    action: str,
+    quantity: int,
+    symbol: str,
+    tp_price: float,
+    limit_price: float | None,
+    parent_order_id: int,
+    strategy_name: str,
+) -> dict:
+    """Patch 98: child take-profit LMT row linked to a parent entry order.
+
+    Legacy M_Combined format (verified against Vas's file, e.g. AXTI):
+      OrderType  = LMT, TimeInForce = DAY
+      LmtPrice   = absolute TP price (entry 56.50 -> TP LmtPrice 73.55)
+      AuxPrice   = blank (LMT orders use LmtPrice; AuxPrice is STP-only)
+      Percentage = absolute offset |tp - limit| (73.55 - 56.50 = 17.05)
+      ParentOrderId = entry order id; IBKR OCA-links same-parent children,
+      so the stop and TP cancel each other on fill. OCAGroup stays blank,
+      matching the legacy file.
+
+    Only called for LIMIT/LIMIT_ATR entries with engine-computed tp_price.
+    """
+    if limit_price and limit_price > 0:
+        percentage = round(abs(tp_price - limit_price), 2)
+    else:
+        percentage = ''
+
+    return {
+        'Account':       account,
+        'BasketTag':     basket_tag,
+        'OrderId':       '',
+        'ParentOrderId': parent_order_id,
+        'Action':        action,
+        'Quantity':      quantity,
+        'Symbol':        symbol,
+        'SecType':       'STK',
+        'Exchange':      'SMART/AMEX',
+        'Currency':      'USD',
+        'TimeInForce':   'DAY',
+        'OrderType':     'LMT',
+        'LmtPrice':      round(tp_price, 4),
+        'AuxPrice':      '',
+        'OCAGroup':      '',
+        'Rth':           '=FALSE()',
+        'OrderRef':      strategy_name,
+        'Percentage':    percentage,
         'Rank':          '',
     }
 

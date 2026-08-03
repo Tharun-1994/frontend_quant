@@ -225,6 +225,10 @@ def patch_current_stop_price( row_id: int, request: StopPatchRequest = Body(...)
     row.current_stop_price = (
         Decimal(str(new_value)) if new_value is not None else None
     )
+    # Patch 108: mark/clear the explicit trader override. Setting a value
+    # pins the stop (engine echoes it as trader_override); clearing it
+    # (null) returns the position to nightly ATR recompute.
+    row.stop_overridden = new_value is not None
     db.commit()
     db.refresh(row)
 

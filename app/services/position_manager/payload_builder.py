@@ -60,6 +60,7 @@ def build_execution_step_payload(
     data_root: str,
     test_start_date: Optional[date] = None,   # None = use EXECUTION_START_DATE
     execution_mode: bool = True,              # False = test mode: use regime.capital (backtest scale)
+    allow_disabled: bool = False,             # Patch 147: combined-exec members are scouts (see combined/execute.py)
 ) -> dict[str, Any]:
     """Build the JSON-serializable dict for POST /api/execution/step/single.
 
@@ -96,8 +97,12 @@ def build_execution_step_payload(
             f'when it lands.'
         )
 
-    # Execution_enabled MUST be true at runtime — admin-controlled kill switch
-    if not strategy_orm.execution_enabled:
+    # Execution_enabled MUST be true at runtime — admin-controlled kill switch.
+    # Patch 147: combined-execution members are the ONE sanctioned exception —
+    # they generate candidates but never emit orders (the combined re-sizes
+    # and is the sole emitter), so combined/execute.py passes
+    # allow_disabled=True. Every other caller keeps the hard fail.
+    if not strategy_orm.execution_enabled and not allow_disabled:
         raise ValueError(
             f'Strategy id={strategy_id} ({strategy_orm.name}) has '
             f'execution_enabled=False. PM should not have been invoked for it.'

@@ -90,6 +90,34 @@ def main(argv: Optional[list[str]] = None) -> int:
                   f'{type(e).__name__}: {e}  (see eod_run_log for details)')
             return 1
 
+        # Step 3 (Patch 101): also emit M_Combined_{D}_SUB.csv — the
+        # remaining SUBSTITUTE_POOL rows in the same 19-column basket
+        # format the Holding/Tradelist page button downloads. Written
+        # NEXT TO the main XLSX so Vas gets execution + substitutes from
+        # the one Trigger Morning run. Pool rows already promoted by a
+        # 'substitute' action are PENDING_FILL and correctly absent here.
+        # Reference-only file — failure logs loudly but never fails the
+        # morning run (the execution XLSX is already on disk).
+        try:
+            from app.services.position_manager.broker_basket_builder import (
+                build_substitute_basket,
+                substitute_to_csv_string,
+            )
+            sub_basket = build_substitute_basket(db, trade_date)
+            sub_path = (
+                output_dir
+                / f'M_Combined_{trade_date.strftime("%Y%m%d")}_SUB.csv'
+            )
+            sub_path.parent.mkdir(parents=True, exist_ok=True)
+            sub_path.write_text(
+                substitute_to_csv_string(sub_basket), encoding='utf-8',
+            )
+            print(f'[morning_basket] SUB file SUCCESS — wrote '
+                  f'{len(sub_basket)} substitute rows to {sub_path}')
+        except Exception as e:
+            print(f'[morning_basket] SUB file FAILED (non-fatal): '
+                  f'{type(e).__name__}: {e}')
+
         return 2 if n_overlay_failed > 0 else 0
 
     except Exception as e:

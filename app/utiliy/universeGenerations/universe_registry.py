@@ -52,11 +52,11 @@ REGISTRY = [
     # local files, NOT Norgate-direct). For each manual-button click the
     # loop processes dependencies first, then liquid500's membership
     # pre-step finds them up to date. spy stays last (no dependency).
-    UniverseSpec('sp500',       'S&P 500',            dt.date(1998, 1, 28)),
-    UniverseSpec('sp1500',      'S&P Composite 1500', dt.date(1998, 1, 28)),
-    UniverseSpec('russell3000', 'Russell 3000',       dt.date(2000, 6, 29)),
+    UniverseSpec('sp500',       'S&P 500',            dt.date(1998, 1, 1)),
+    UniverseSpec('sp1500',      'S&P Composite 1500', dt.date(1998, 1, 1)),
+    UniverseSpec('russell3000', 'Russell 3000',       dt.date(1998, 1, 1)),
     UniverseSpec('liquid500',   'Liquid_500',         dt.date(1998, 1, 28), liquid_500_csv=LIQUID_500_CSV),
-    UniverseSpec('spy',         ['SPY'],              dt.date(1998, 1, 28)),
+    UniverseSpec('spy',         ['SPY'],              dt.date(1998, 1, 1)),
     # UniverseSpec('index',     ['$SPX', '$RUI', '$RUT'], dt.date(1998, 1, 28)),
     # UniverseSpec('sp100',     'S&P 100',            dt.date(1998, 1, 28)),
     # UniverseSpec('nasdaq100', 'Nasdaq 100',         dt.date(1998, 1, 28)),

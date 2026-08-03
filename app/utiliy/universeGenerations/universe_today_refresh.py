@@ -475,6 +475,32 @@ def refresh_all_today(end_date: Optional[dt.date] = None,
                 # so the result panel can display it. Additive — never
                 # overwrites existing append_universe_today fields.
                 result['membership'] = membership_info
+            # Patch 100 (supersedes Patch 93's single default-variant call):
+            # CRSI variant SWEEP — fully generic, no slug guard. After the
+            # universe's price-append completes, every existing CRSI variant
+            # file ({slug}_CRSI_R*_U*_X*.csv) in that universe's folder is
+            # extended incrementally. Universes with no variant files are a
+            # no-op. NEW variants are never created here — creation happens
+            # on demand (GeneratePricesIndicators, sync full-history) or via
+            # the regenerate endpoint. Per-variant failures are captured in
+            # the summaries; a sweep-level failure is recorded but doesn't
+            # blow up the whole refresh.
+            try:
+                from app.utiliy.universeGenerations.universe_crsi import (
+                    sweep_universe_crsi_variants,
+                )
+                crsi_infos = sweep_universe_crsi_variants(
+                    universe_slug=spec.slug,
+                    base_path=Path(universes_root or UNIVERSES_ROOT) / spec.slug,
+                    end_date=resolved,
+                )
+                if crsi_infos:
+                    result['crsi'] = crsi_infos
+            except Exception as e:
+                result['crsi'] = {
+                    'status': 'ERROR',
+                    'reason': f'{type(e).__name__}: {e}',
+                }
             universe_results.append(result)
         except Exception as e:
             universe_results.append({'slug': spec.slug, 'status': 'ERROR',

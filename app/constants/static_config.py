@@ -68,6 +68,7 @@ FUNCTION_MAPPER = {
     "daily_range_pct": "DailyRangePct",   # LRA Patch 16
     "roc": "ROC",
     "consec_down": "ConsecutiveDown",
+    "consec_up": "ConsecutiveUp",       # Patch 166
     "rolling_vol_median": "RollingVolatilityMedian",
 }
 

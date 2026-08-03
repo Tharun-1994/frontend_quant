@@ -90,30 +90,14 @@ def save_strategy(strategy_data: StrategyRequest, db: Session = Depends(get_db))
             StrategyBucket.id == strategy_data.id
         ).first()
 
-    # Patch 55: validate execution_enabled invariant — every regime must have
-    # production_capital > 0 before the strategy can be flipped live.
-    if strategy_data.execution_enabled and strategy is not None:
-        bad_regimes = (
-            db.query(MarketRegime)
-            .filter(MarketRegime.strategy_id == strategy.id)
-            .filter(
-                (MarketRegime.production_capital == None)  # noqa: E711
-                | (MarketRegime.production_capital <= 0)
-            )
-            .all()
-        )
-        if bad_regimes:
-            names = ", ".join(
-                f"{r.regime_type} (id={r.id})" for r in bad_regimes
-            )
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Cannot enable execution: {len(bad_regimes)} regime(s) "
-                    f"missing production_capital — {names}. Set production_capital "
-                    f"on every regime before enabling execution."
-                ),
-            )
+    # Patch 89: enable-then-fund. The "every regime must be funded" gate that
+    # used to BLOCK here (Patch 55) has MOVED to the nightly orchestrator
+    # (eod_orchestrator._run_position_managers_step): a live strategy whose
+    # regimes aren't all funded is now SKIPPED + logged at run time, instead of
+    # the form refusing to save. So execution_enabled=TRUE saves immediately and
+    # the strategy simply won't trade until every regime has production_capital>0.
+    # Backstop remains: payload_builder._resolve_execution_capital raises if PM
+    # is invoked (e.g. a manual replay) on a regime with NULL production_capital.
 
     if strategy:
         strategy.name = strategy_data.name
@@ -294,6 +278,7 @@ def save_market_regime(marketregime: MarketRegimeBase, db: Session = Depends(get
     db_obj.takeprofit_dollar = marketregime.takeprofit_dollar
     db_obj.stoploss_dollar = marketregime.stoploss_dollar
     db_obj.stoploss_pct = marketregime.stoploss_pct
+    db_obj.stoploss_max_pct = marketregime.stoploss_max_pct  # Patch 99
     db_obj.takeprofit_pct = marketregime.takeprofit_pct
     db_obj.stoploss_timing = marketregime.stoploss_timing
     # Patch 72e: anchor column write. Validated/defaulted above.
@@ -319,7 +304,11 @@ def save_market_regime(marketregime: MarketRegimeBase, db: Session = Depends(get
     db_obj.max_duplicates = marketregime.max_duplicates
     db_obj.max_duplicate_sets = marketregime.max_duplicate_sets
     db_obj.substitute_pool_size = marketregime.substitute_pool_size
-
+    # Hold Blackout — persist the two new per-regime fields on save.
+    db_obj.hold_blackout_days = marketregime.hold_blackout_days
+    db_obj.hold_blackout_unit = marketregime.hold_blackout_unit
+    # Rebalance weekday — persist on save.
+    db_obj.rebalance_weekday = marketregime.rebalance_weekday
     # Patch 56: per-regime production_capital write. Audit row appended after
     # commit+refresh (see _patch56_production_capital_audit below).
     db_obj.production_capital = marketregime.production_capital
@@ -331,6 +320,10 @@ def save_market_regime(marketregime: MarketRegimeBase, db: Session = Depends(get
     )
     db_obj.vol_filter_json    = (
         json.dumps(marketregime.vol_filter.dict()) if marketregime.vol_filter else None
+    )
+    # Patch 167 v2: limit-mode parameters (plain dict, mode-agnostic)
+    db_obj.limit_params_json  = (
+        json.dumps(marketregime.limit_params) if marketregime.limit_params else None
     )
 
     # Rule trees — normalise then serialise

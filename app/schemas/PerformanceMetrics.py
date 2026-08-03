@@ -123,8 +123,8 @@ class PerformanceMetrics(BaseModel):
         tradelist_df['exitDate'] = pd.to_datetime(tradelist_df['exitDate'])
         opens = tradelist_df['entryDate'].values.astype('datetime64[D]')
         closes = tradelist_df['exitDate'].values.astype('datetime64[D]')
-        tradelist_df['trade_length_bd'] = np.busday_count(opens, closes)
-        avg_trade_len = round(tradelist_df['trade_length_bd'].mean(), 2)
+        # tradelist_df['trade_length_bd'] = np.busday_count(opens, closes)
+        # avg_trade_len = round(tradelist_df['trade_length_bd'].mean(), 2)
 
         # --- Top 10 Worst Drawdowns ---
 
@@ -228,7 +228,7 @@ class PerformanceMetrics(BaseModel):
             profit_factor=profit_factor,
             sharpe_ratio=sharpe_ratio,
             k_ratio=k_ratio,
-            avg_trade_len=avg_trade_len,
+            avg_trade_len=0,
             top10_dd=top10_dd,
             yearly_returns=yearly_returns,
             monthly_returns=monthly_returns,

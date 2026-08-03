@@ -808,6 +808,22 @@ class IndicatorCalculator:
 
     @staticmethod
     @register
+    def ConsecutiveUp(prices, n=0):
+        """Patch 166: mirror of ConsecutiveDown. For each date, returns the
+        length of the consecutive-UP-close streak ENDING on that date.
+        An up day is close[t] > close[t-1].
+        Example: closes [10, 11, 12, 13, 12] -> streak [0, 1, 2, 3, 0].
+
+        Use rule: consec_up >= N to require an N-day up streak.
+        The `n` parameter is unused (lookback ignored -- pure derived series).
+        """
+        is_up = prices.diff() > 0
+        return is_up.apply(
+            lambda col: col.astype(int).groupby((~col).cumsum()).cumsum()
+        )
+
+    @staticmethod
+    @register
     def RollingVolatilityMedian(prices, vol_lookback=20, median_lookback=252):
         # Patch 75: ddof=0 to match RollingVolatilityUnshifted — the LHS vol the pause compares
         # against. The gate is a RATIO test (vol > multiple * median); std(ddof=0) and std(ddof=1)
@@ -1128,8 +1144,21 @@ class IndicatorCalculator:
     @staticmethod
     @register
     def connors_ROC(df,lookback=100):
+        # Patch 100: vectorized. rank(method='min') of the window's last
+        # value = 1 + count(values strictly less than it), so rank-1 is
+        # exactly the legacy loop's len(y[y < y[-1]]). Parity-tested
+        # bit-identical against connors_ROC_loop on NaN heads, halt gaps,
+        # zero deltas and heavy ties; ~100x faster (C rolling rank vs
+        # python lambda per window). NaN-in-window -> NaN, same as before
+        # (min_periods defaults to the window size in both).
         roc_df = IndicatorCalculator.ROC(df, 1)
-        #print(roc_df)
+        return roc_df.rolling(lookback).rank(method='min') - 1.0
+
+    @staticmethod
+    def connors_ROC_loop(df,lookback=100):
+        # Pre-Patch 100 implementation — kept (unregistered) as the parity
+        # reference for connors_ROC. Do not call in production paths.
+        roc_df = IndicatorCalculator.ROC(df, 1)
         return roc_df.apply(lambda x: x.rolling(lookback).apply(lambda y: len(y.values[y.values<y.values[-1]])),0)
 
 
@@ -1146,11 +1175,37 @@ class IndicatorCalculator:
     @staticmethod
     @register
     def integrate_updown(series_up, series_down):
+        # Patch 100: vectorized streak. Replicates the legacy per-row loop
+        # exactly (parity-tested bit-identical): NaN rows stay NaN and do
+        # NOT reset the streak (the run continues across gaps); a zero
+        # delta (unchanged close, sign==0) counts as a DOWN continuation,
+        # matching the legacy else-branch; element 0 is always NaN.
+        # series_down is accepted for signature compatibility (the legacy
+        # loop never used it either).
+        v = series_up.to_numpy(dtype=float)
+        out = np.full(v.shape, np.nan)
+        mask = ~np.isnan(v)
+        if mask.sum() == 0:
+            return list(out)
+        d = np.where(v[mask] == 1, 1, -1).astype(np.int64)
+        change = np.empty(d.shape, dtype=bool)
+        change[0] = True
+        change[1:] = d[1:] != d[:-1]
+        idx = np.arange(d.shape[0])
+        run_start = np.maximum.accumulate(np.where(change, idx, 0))
+        pos = idx - run_start + 1          # 1-based position within the run
+        out[mask] = d * pos
+        out[0] = np.nan                     # legacy: array[0] = np.nan always
+        return list(out)
+
+    @staticmethod
+    def integrate_updown_loop(series_up, series_down):
+        # Pre-Patch 100 implementation — kept (unregistered) as the parity
+        # reference for integrate_updown. Do not call in production paths.
         array = []
         cnt = 0
         isUp = False;
         for i in range(len(series_up)):
-            #print(series_up.iloc[i], series_down.iloc[i])
             if np.isnan(series_up.iloc[i]):
                 array.append(np.nan)
                 continue
@@ -1282,13 +1337,133 @@ class IndicatorCalculator:
 
         return (roll_n == roll_x)
 
+    # AER Patch 3: Annualized Excess Return (entry/exit filter).
+    @staticmethod
+    @register
+    def annualized_excess_return(stock_closes, risk_free_closes, lookback: int = 252):
+        """
+        Annualized Excess Return = stock N-day % return - risk-free N-day % return.
+
+        Mirrors the Rotational reference exactly:
+            stock_returns    = daily_closes.pct_change(lookback) * 100
+            risk_free_returns = risk_free_closes.pct_change(lookback) * 100
+            AER              = stock_returns - risk_free_returns
+
+        Parameters
+        ----------
+        stock_closes : pd.DataFrame
+            Daily closes, one column per ticker in the universe.
+        risk_free_closes : pd.DataFrame or pd.Series
+            Daily closes of the risk-free proxy (single series). If a DataFrame
+            is passed, its first column is used (matches the closes_spy pattern).
+        lookback : int
+            Return window in trading days (252 = 1 year). Trader-configurable.
+
+        Returns
+        -------
+        pd.DataFrame
+            AER in percentage points, aligned to stock_closes.
+        """
+        # 100 = percentage-point convention; the rule threshold (e.g. 4 = 4%)
+        # is defined against this, so it is a unit convention, not a strategy knob.
+        stock_returns = stock_closes.pct_change(lookback) * 100
+
+        if hasattr(risk_free_closes, "columns"):
+            rf_series = risk_free_closes.iloc[:, 0]
+        else:
+            rf_series = risk_free_closes
+        risk_free_returns = rf_series.pct_change(lookback) * 100
+
+        # Subtract the single risk-free series from every stock column, aligned on date.
+        return stock_returns.sub(risk_free_returns, axis=0)
+
+    @staticmethod
+    @register
+    def spy_percentile_rank(stock_closes, market_closes, lookback: int = 52,
+                            lookback_unit: str = "weeks", window_mode: str = "legacy"):
+        """
+        For each period, the % of the last N index closes that sit BELOW today's
+        close (0-100). High = index near range highs; low = near range lows.
+
+        Mirrors the Rotational reference when window_mode='legacy':
+            last = spy_weekly.iloc[i-(lookback-1) : i]   # lookback-1 prior weeks
+            count = (today > last).sum()
+            pct = count / lookback * 100                 # divides by lookback
+
+        window_mode='standard' uses a clean percentile: lookback prior closes
+        divided by lookback (max reaches 100).
+        """
+        import pandas as _pd
+
+        mkt = market_closes.iloc[:, 0] if hasattr(market_closes, "columns") else market_closes
+
+        unit = (lookback_unit or "weeks").lower().strip()
+        mode = (window_mode or "legacy").lower().strip()
+
+        # Resample the index to the chosen unit.
+        if unit == "weeks":
+            # Last trading day of each week, keeping REAL trading-day dates so the
+            # weekly index stays a subset of the daily index (matches the original
+            # spy_weekly reindex+ffill exactly). resample("W") would emit Sunday
+            # labels that aren't trading days, so a later reindex(daily) drops
+            # every value -> all NaN. Grouping by ISO week and taking the last
+            # actual date avoids that calendar drift.
+            _last = (_pd.Series(mkt.index, index=mkt.index)
+                     .groupby(mkt.index.to_period("W")).last())
+            series = mkt.loc[_last.values]
+        else:
+            series = mkt
+
+        divisor = int(lookback)
+        # legacy compares (lookback-1) prior closes but still divides by lookback.
+        window = (divisor - 1) if mode == "legacy" else divisor
+
+        vals = series.values
+        pct = _pd.Series(index=series.index, dtype="float64")
+        for i in range(len(series)):
+            if i < divisor:  # need `divisor` history before first reading
+                continue
+            today = vals[i]
+            prior = vals[i - window:i]  # `window` prior closes (excludes today)
+            count_below = (today > prior).sum()
+            pct.iloc[i] = (count_below / divisor) * 100.0
+
+        # Broadcast the market-wide value across every stock column, then reindex
+        # to the (daily) stock index and forward-fill — matches spy_52_df logic.
+        result = _pd.DataFrame(index=series.index, columns=stock_closes.columns, dtype="float64")
+        for _col in result.columns:
+            result[_col] = pct.values
+        return result.reindex(stock_closes.index).ffill()
+
+    @staticmethod
+    @register
+    def haer(stock_closes, risk_free_closes, lookback: int = 252):
+        stock_returns = stock_closes.pct_change()
+        rf_series = risk_free_closes.iloc[:, 0] if hasattr(risk_free_closes, "columns") else risk_free_closes
+        rf_returns = rf_series.pct_change()
+        excess = stock_returns.sub(rf_returns, axis=0)
+        log_excess = np.log(1 + excess)
+        ma = log_excess.rolling(window=lookback, min_periods=lookback).mean()
+        return np.exp(ma * 252) - 1
+
+    @staticmethod
+    @register
+    def vix_close(stock_closes, market_closes, lookback: int = 0):
+        import pandas as _pd
+        mkt = market_closes.iloc[:, 0] if hasattr(market_closes, "columns") else market_closes
+        aligned = mkt.reindex(stock_closes.index).ffill()
+        result = _pd.DataFrame(index=stock_closes.index, columns=stock_closes.columns, dtype="float64")
+        for _col in result.columns:
+            result[_col] = aligned.values
+        return result
+
 '''
 
 
 # NOTE: 3 = RSI Period length, 2 = UpDown Length: The number of consecutive days that a security price has either closed up (higher than previous day) or closed down (lower than previous days)
-    #       100 = Rate of change (ROC) period
-    # For each of the 3 parameters I have given them the letter p to denote 'parameter'
-    user.entry_crsi_entry_p1 = 3
-    user.entry_crsi_entry_p2 = 2
-    user.entry_crsi_entry_p3 = 100
+#       100 = Rate of change (ROC) period
+# For each of the 3 parameters I have given them the letter p to denote 'parameter'
+user.entry_crsi_entry_p1 = 3
+user.entry_crsi_entry_p2 = 2
+user.entry_crsi_entry_p3 = 100
 '''

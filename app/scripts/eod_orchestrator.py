@@ -42,6 +42,7 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models.eod_run_log import EodRunLog
 from app.models.strategy_bucket import StrategyBucket
+from app.models.market_regime import MarketRegime  # Patch 89: run-time funding gate
 from app.services.exec_data_refresh import run_exec_data_refresh, resolve_data_date
 from app.services.position_manager import run_position_manager
 from app.constants.PricePath import PricePath
@@ -157,6 +158,69 @@ def _run_position_managers_step(
 
     for strategy in strategies:
         print(f'[orchestrator] --- strategy_id={strategy.id} ({strategy.name}) ---')
+        # Patch 89: enable-then-fund gate (moved here from save-strategy). Skip a
+        # live strategy whose regimes aren't all funded (production_capital > 0) —
+        # an unfunded regime sizes to zero / raises in payload_builder. Fund every
+        # regime to trade it live. This does NOT count as a failure.
+        _unfunded = (
+            db.query(MarketRegime)
+            .filter(MarketRegime.strategy_id == strategy.id)
+            .filter(
+                (MarketRegime.production_capital == None)  # noqa: E711
+                | (MarketRegime.production_capital <= 0)
+            )
+            .all()
+        )
+        if _unfunded:
+            _names = ', '.join(f'{r.regime_type} (id={r.id})' for r in _unfunded)
+            print(
+                f'[orchestrator] strategy_id={strategy.id} SKIPPED — '
+                f'{len(_unfunded)} regime(s) missing production_capital: {_names}. '
+                f'Set production_capital > 0 on every regime to trade it live.'
+            )
+            continue
+        # Patch 148: Combined books do not run the per-strategy PM — their
+        # regime type has no engine payload. Their evening leg (member scout
+        # steps -> gate -> production-profile allocation -> PROPOSED rows) is
+        # combined/execute.execute_combined; the morning broker_write flow
+        # then treats strategy-34 rows identically to every other book.
+        if (strategy.market_regime_type or '').strip().lower() == 'combined':
+            from app.services.combined.execute import execute_combined
+            log_row = EodRunLog(run_date=run_date, step='execution_step',
+                                strategy_id=strategy.id, status='RUNNING')
+            db.add(log_row)
+            db.commit()
+            try:
+                audit = execute_combined(db, strategy.id, run_date=run_date,
+                                         data_root=data_root)
+                log_row.status = 'SUCCESS'
+                log_row.finished_at = datetime.now()
+                log_row.rows_affected = int(
+                    audit.get('proposed_inserted', 0)
+                    + audit.get('substitute_pool_inserted', 0))
+                db.commit()
+                n_success += 1
+                print(
+                    f'[orchestrator] strategy_id={strategy.id} SUCCESS '
+                    f"(combined): gate="
+                    f"{'open' if audit['gate']['open'] else 'CLOSED'}"
+                    f"/{audit['gate']['label']} "
+                    f"proposed={audit['proposed_inserted']}/"
+                    f"{audit['substitute_pool_inserted']} "
+                    f'eod_run_log_id={log_row.id}'
+                )
+            except Exception as e:
+                db.rollback()   # execute_combined rolled back its own writes
+                log_row.status = 'FAILED'
+                log_row.finished_at = datetime.now()
+                log_row.error_msg = f'{type(e).__name__}: {e}'
+                db.commit()
+                n_failed += 1
+                print(
+                    f'[orchestrator] strategy_id={strategy.id} FAILED '
+                    f'(combined): {type(e).__name__}: {e}'
+                )
+            continue
         try:
             result = run_position_manager(
                 db=db,

@@ -47,9 +47,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         log_path,
     )
     if rc1_live != 0:
-        _log(log_path, f'Step 1 FAILED with exit code {rc1_live} — aborting')
-        _log(log_path, '=' * 60)
-        return 10
+        # Patch 96: do NOT abort. The live pipeline now isolates per-universe (a
+        # failed universe is dropped, healthy ones still build), so proceed to
+        # Step 2 — the orchestrator runs each enabled strategy independently and
+        # any whose universe didn't build fails on its own (the rest continue).
+        _log(log_path, f'Step 1 returned exit code {rc1_live} — continuing '
+                       f'(per-universe isolation; Step 2 handles the rest)')
 
     # ── Step 1b: universe_pipeline (legacy / lra_14 etc.) ────────────────
     # Static REGISTRY currently only includes lra_14, which IS execution-
@@ -61,10 +64,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         log_path,
     )
     if rc1 != 0:
-        _log(log_path, f'Step 1b FAILED with exit code {rc1} — aborting')
-        _log(log_path, '=' * 60)
-        return 10
-    _log(log_path, 'Step 1 SUCCESS')
+        # Patch 96: same isolation policy as Step 1 — log and continue.
+        _log(log_path, f'Step 1b returned exit code {rc1} — continuing')
+    _log(log_path, 'Step 1 complete (see per-step results above)')
 
     # ── Step 2: eod_orchestrator ───────────────────────────────────────────
     _log(log_path, '')

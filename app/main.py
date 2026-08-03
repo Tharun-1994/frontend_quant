@@ -26,7 +26,7 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
-
+from app.routes.combined import router as combined_router
 from app.database import engine, Base, SessionLocal
 from app.models import *  # registers all ORM models with Base
 from app.routes.backtest import router as backtest_router
@@ -121,6 +121,7 @@ app.include_router(tradelist_router)
 # System Comparison: upload + compare equity/tradelist CSVs
 app.include_router(uploaded_systems_router)
 app.include_router(universe_exclusions_router)
+app.include_router(combined_router)  # Patch 119
 
 # ── Global exception handler ──────────────────────────────────────────────────
 

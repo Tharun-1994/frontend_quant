@@ -50,6 +50,16 @@ class VolFilter(BaseModel):
     vol_pct_bear: float = 0.45       # bottom 45% excluded when SPY <= SMA200
     turnover_pct_bull: float = 0.35  # bottom 35% excluded when SPY > SMA200
     turnover_pct_bear: float = 0.05  # bottom 5%  excluded when SPY <= SMA200
+    # Patch 116: configurable regime-SMA lookback and annual recalc trigger.
+    # Defaults preserve legacy behavior: SMA(200), first trading day of January.
+    spy_sma_lookback: int = 200      # SPY SMA lookback for bull/bear detection
+    trigger_month: int = 1           # 1=Jan .. 12=Dec — annual recalc month
+    trigger_tdom: int = 0            # 0-indexed trading day of trigger_month
+    # Patch 116: rolling lookback for avg_volume/avg_turnover parquets.
+    # Legacy uses 21 (vol_avg_lookback/turnover_avg_lookback in
+    # application_phase_1.properties); GeneratePricesIndicators previously
+    # hardcoded 200 — parity bug. Consumed in Patch 117.
+    avg_lookback: int = 21
 
 class SafetyNetItem(BaseModel):
     """One stateful safety net policy.
@@ -105,6 +115,8 @@ class MarketRegimeBase(BaseModel):
     stoploss_type: Optional[str] = None
     takeprofit_type: Optional[str] = None
     stoploss_pct: Optional[float] = None
+    # Patch 99: cap on ATR stop offset, as % of anchor price. None/0 = disabled.
+    stoploss_max_pct: Optional[float] = None
 
     stoploss_dollar: Optional[float] = None
 
@@ -127,6 +139,7 @@ class MarketRegimeBase(BaseModel):
     order_type: Optional[str] = None
     limit_pct: Optional[float] = None
     atr_limit_lookback: Optional[int] = None
+    limit_params: Optional[Dict[str, float]] = None   # Patch 167 v2 (LIMIT_HV et al.)
 
     universe: Optional[str] = None
     capital: Optional[float] = None
@@ -142,6 +155,14 @@ class MarketRegimeBase(BaseModel):
     # on this regime. SignalEngine reads this when building the pool the
     # trader can promote to active via overlay-apply.
     substitute_pool_size: Optional[int] = 20
+
+    # Hold Blackout: after a stock exits, block re-entry for hold_blackout_days
+    # days (0/None = disabled). hold_blackout_unit = 'calendar' or 'trading'.
+    hold_blackout_days: Optional[int] = None
+    hold_blackout_unit: Optional[str] = None
+
+    # Rebalance weekday (0=Mon .. 4=Fri); None = every day.
+    rebalance_weekday: Optional[int] = None
 
     created_at: Optional[datetime] = None
     max_time: Optional[int] = None
