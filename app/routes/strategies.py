@@ -304,7 +304,11 @@ def save_market_regime(marketregime: MarketRegimeBase, db: Session = Depends(get
     db_obj.max_duplicates = marketregime.max_duplicates
     db_obj.max_duplicate_sets = marketregime.max_duplicate_sets
     db_obj.substitute_pool_size = marketregime.substitute_pool_size
-
+    # Hold Blackout — persist the two new per-regime fields on save.
+    db_obj.hold_blackout_days = marketregime.hold_blackout_days
+    db_obj.hold_blackout_unit = marketregime.hold_blackout_unit
+    # Rebalance weekday — persist on save.
+    db_obj.rebalance_weekday = marketregime.rebalance_weekday
     # Patch 56: per-regime production_capital write. Audit row appended after
     # commit+refresh (see _patch56_production_capital_audit below).
     db_obj.production_capital = marketregime.production_capital

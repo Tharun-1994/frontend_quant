@@ -148,5 +148,15 @@ class MarketRegime(Base):
     # pool that the trader can promote to active via overlay-apply.
     substitute_pool_size = Column(Integer, nullable=True, default=20)
 
+    # Hold Blackout: after a stock exits, block it from re-entry for
+    # hold_blackout_days days. 0/NULL disables. hold_blackout_unit selects how
+    # the days are counted in the engine ('calendar' or 'trading').
+    hold_blackout_days = Column(Integer, nullable=True, default=0)
+    hold_blackout_unit = Column(String(10), nullable=True, default="calendar")
+
+    # Rebalance weekday: restrict entries to one weekday (0=Mon .. 4=Fri).
+    # NULL = every day (default). With max_time this yields weekly rotation.
+    rebalance_weekday = Column(Integer, nullable=True, default=None)
+
     # # RELATIONSHIP
     strategy = relationship("StrategyBucket", back_populates="regimes")

@@ -85,6 +85,49 @@ INDEX_REGISTRY = {
         'description' : 'Nasdaq-100 ETF (QQQ)',
     },
 
+    # AER Patch 1: risk-free (T-Bill) proxies for Annualized Excess Return.
+    # Each entry makes that ticker selectable as `risk_free_ticker`. Add more
+    # rows and re-run `generate_index_prices.py --only <key>` to expose them.
+    'bil': {
+        'symbol'      : 'BIL',
+        'adjustment'  : nd.StockPriceAdjustmentType.TOTALRETURN,
+        'padding'     : nd.PaddingType.NONE,
+        'start_date'  : '1998-01-01',
+        'description' : 'SPDR 1-3 Month T-Bill ETF (BIL)',
+    },
+    'shv': {
+        'symbol'      : 'SHV',
+        'adjustment'  : nd.StockPriceAdjustmentType.TOTALRETURN,
+        'padding'     : nd.PaddingType.NONE,
+        'start_date'  : '2007-01-01',
+        'description' : 'iShares Short Treasury Bond ETF (SHV)',
+    },
+    'sgov': {
+        'symbol': 'SGOV',
+        'adjustment': nd.StockPriceAdjustmentType.TOTALRETURN,
+        'padding': nd.PaddingType.NONE,
+        'start_date': '2020-01-01',
+        'description': 'iShares 0-3 Month Treasury Bond ETF (SGOV)',
+    },
+
+    # SPY Patch P1: S&P 500 trackers selectable as `market_ticker` for
+    # spy_percentile_rank. SPY is already defined above; IVV/VOO added so every
+    # dropdown option resolves to real data.
+    'ivv': {
+        'symbol': 'IVV',
+        'adjustment': nd.StockPriceAdjustmentType.TOTALRETURN,
+        'padding': nd.PaddingType.NONE,
+        'start_date': '2000-01-01',
+        'description': 'iShares Core S&P 500 ETF (IVV)',
+    },
+    'voo': {
+        'symbol': 'VOO',
+        'adjustment': nd.StockPriceAdjustmentType.TOTALRETURN,
+        'padding': nd.PaddingType.NONE,
+        'start_date': '2010-01-01',
+        'description': 'Vanguard S&P 500 ETF (VOO)',
+    },
+
 }
 
 # ── Core fetch + save ─────────────────────────────────────────────────────────

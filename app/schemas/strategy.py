@@ -156,6 +156,14 @@ class MarketRegimeBase(BaseModel):
     # trader can promote to active via overlay-apply.
     substitute_pool_size: Optional[int] = 20
 
+    # Hold Blackout: after a stock exits, block re-entry for hold_blackout_days
+    # days (0/None = disabled). hold_blackout_unit = 'calendar' or 'trading'.
+    hold_blackout_days: Optional[int] = None
+    hold_blackout_unit: Optional[str] = None
+
+    # Rebalance weekday (0=Mon .. 4=Fri); None = every day.
+    rebalance_weekday: Optional[int] = None
+
     created_at: Optional[datetime] = None
     max_time: Optional[int] = None
 

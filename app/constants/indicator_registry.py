@@ -616,7 +616,110 @@ INDICATOR_REGISTRY = {
             "availability": (
                 _avail(EQUITY_REGIMES, [ENTRY], LHS, sort_order=8)
             ),
-        },
+    },
 
+    # AER Patch 2: Annualized Excess Return — fundamental-strength entry filter.
+    # Trader-configurable knobs: lookback (return window), risk_free_ticker
+    # (which T-Bill proxy), operator + value (the threshold, in %). Nothing is
+    # hardcoded — the ticker flows from params, the window from lookback.
+    "annualized_excess_return": {
+        "display_name": "Annualized Excess Return",
+        "category": "Fundamental",
+        "has_lookback": True,
+        "default_lookback": 252,
+        "has_params": True,
+        "params": [
+            {"key": "risk_free_ticker", "label": "Risk-Free Ticker", "type": "text", "default": "BIL"},
+        ],
+        "params_description": (
+            "risk_free_ticker: the T-Bill proxy the stock is measured against "
+            "(BIL, SHV, SGOV). It must exist as an index CSV — run "
+            "generate_index_prices.py --only <ticker> to add one. "
+            "lookback: return window in trading days (252 = 1 year). "
+            "The rule value is the threshold in percent (e.g. 4 = beat T-Bills by 4%)."
+        ),
+        "kind": None,
+        "has_range": False,
+        "universe_restriction": None,
+        "caution_note": (
+            "Compares each stock's N-day % return against the chosen risk-free "
+            "ticker's N-day % return. Requires that ticker's price CSV to exist."
+        ),
+        "sort_order":           24,
+        "availability": (
+            _avail(EQUITY_REGIMES, [ENTRY, EXIT], LHS, sort_order=9)
+        ),
+    },
+
+    # SPY Patch P2: SPY Percentile Rank — market-regime filter. Computes, for
+    # each day, the % of the last N weekly closes the index sits above (0-100).
+    # Everything is trader-chosen from dropdowns while building the rule:
+    #   market_ticker  — which index (SPY/IVV/VOO)
+    #   lookback_unit  — weeks or days
+    #   window_mode    — "legacy" replicates the original Rotational 51/52
+    #                    off-by-one; "standard" is a clean N/N percentile.
+    # lookback (standard field) is the ranking window; value is the threshold.
+    "spy_percentile_rank": {
+        "display_name":         "SPY Percentile Rank",
+        "category":             "Market Regime",
+        "has_lookback":         True,
+        "default_lookback":     52,
+        "has_params":           True,
+        "params": [
+            {"key": "market_ticker", "label": "Market Index", "type": "select",
+             "default": "SPY", "options": ["SPY", "IVV", "VOO"]},
+            {"key": "lookback_unit", "label": "Lookback Unit", "type": "select",
+             "default": "weeks", "options": ["weeks", "days"]},
+            {"key": "window_mode", "label": "Window Mode", "type": "select",
+             "default": "legacy", "options": ["legacy", "standard"]},
+        ],
+        "params_description": (
+            "market_ticker: index whose range is measured (SPY, IVV, VOO). "
+            "lookback: ranking window (52 = one year of weeks). "
+            "lookback_unit: 'weeks' resamples to Friday closes; 'days' uses daily. "
+            "window_mode: 'legacy' = original Rotational behaviour (compares the "
+            "(lookback-1) prior closes but divides by lookback); 'standard' = "
+            "clean percentile (lookback prior closes / lookback). "
+            "The rule value is the threshold in percent (e.g. > 12.5)."
+        ),
+        "kind":                 None,
+        "has_range":            False,
+        "universe_restriction": None,
+        "caution_note": (
+            "Market-wide value — every stock gets the same reading each day. "
+            "The chosen market_ticker must exist as an index CSV "
+            "(generate_index_prices.py --only <ticker>)."
+        ),
+        "sort_order":           25,
+        "availability": (
+            _avail(EQUITY_REGIMES, [ENTRY, EXIT], LHS, sort_order=10)
+        ),
+    },
+
+"haer": {
+        "display_name":         "Ann. Excess Return (geometric, ranking)",
+        "category":             "Fundamental",
+        "has_lookback":         True,
+        "default_lookback":     252,
+        "has_params":           True,
+        "params": [
+            {"key": "risk_free_ticker", "label": "Risk-Free Ticker", "type": "select",
+             "default": "BIL", "options": ["BIL", "SHV", "SGOV"]},
+        ],
+        "params_description": (
+            "risk_free_ticker: T-Bill proxy the excess return is measured against "
+            "(BIL, SHV, SGOV). lookback: geometric-mean window in trading days "
+            "(252 = 1 year). Rank Descending to prefer the strongest names."
+        ),
+        "kind": None, "has_range": False, "universe_restriction": None,
+        "caution_note": (
+            "Geometric annualized excess return: exp(MA(log(1+daily_excess), "
+            "lookback) x 252) - 1. Requires the risk-free ticker's price CSV."
+        ),
+        "sort_order": 26,
+        "availability": (
+            _avail(EQUITY_REGIMES, [RANKING],     LHS, sort_order=4)
+        ),
+    },
 
 }

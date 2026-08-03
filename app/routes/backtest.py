@@ -281,6 +281,12 @@ def db_to_pydantic(db_obj: MarketRegime) -> MarketRegimeBase:
             json.loads(db_obj.entry_rules_tree_short)
             if db_obj.entry_rules_tree_short else None
         ),
+        # Hold Blackout — surface the saved values back to the frontend on read;
+        # the engine payload (payload_builder) rides this same converter.
+        hold_blackout_days=db_obj.hold_blackout_days,
+        hold_blackout_unit=db_obj.hold_blackout_unit,
+        # Rebalance weekday — surfaced to frontend on read; engine payload rides this.
+        rebalance_weekday=db_obj.rebalance_weekday,
     )
 
 

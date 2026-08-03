@@ -486,6 +486,44 @@ class GeneratePricesIndicators:
                     df=price_data[f"{rebalance}_closes_spy"], lookback=rule.lookback)
                 result = stock_indicator.div(spy_indicator, axis=0)
 
+            elif rule.indicator == 'annualized_excess_return':
+                # AER Patch 5: stock N-day % return minus risk-free N-day % return.
+                # risk_free_ticker is trader-configurable via rule.params; the
+                # closes were loaded on demand in generate() (AER Patch 4). Stored
+                # under the default key '{indicator}_{lookback}', which is exactly
+                # what the Java loader reads — no engine change needed.
+                _rf_ticker = ((rule.params or {}).get('risk_free_ticker') or 'bil').lower()
+                result = GeneratePricesIndicators.call_indicator(
+                    'annualized_excess_return',
+                    stock_closes=price_data[f'{rebalance}_closes'],
+                    risk_free_closes=price_data[f'{rebalance}_closes_{_rf_ticker}'],
+                    lookback=rule.lookback)
+
+            elif rule.indicator == 'spy_percentile_rank':
+                # SPY Patch P5: market-wide percentile rank. market_ticker,
+                # lookback_unit and window_mode all come from rule.params (trader
+                # dropdowns); the ticker's closes were loaded on demand in
+                # generate() (SPY Patch P4). Stored under '{indicator}_{lookback}'
+                # exactly like every other indicator — Java reads it unchanged.
+                _p = rule.params or {}
+                _mkt_ticker = (_p.get('market_ticker') or 'spy').lower()
+                result = GeneratePricesIndicators.call_indicator(
+                    'spy_percentile_rank',
+                    stock_closes=price_data[f'{rebalance}_closes'],
+                    market_closes=price_data[f'{rebalance}_closes_{_mkt_ticker}'],
+                    lookback=rule.lookback,
+                    lookback_unit=(_p.get('lookback_unit') or 'weeks'),
+                    window_mode=(_p.get('window_mode') or 'legacy'))
+
+
+            elif rule.indicator == 'haer':
+                _rf_ticker = ((rule.params or {}).get('risk_free_ticker') or 'bil').lower()
+                result = GeneratePricesIndicators.call_indicator(
+                    'haer',
+                    stock_closes=price_data[f'{rebalance}_closes'],
+                    risk_free_closes=price_data[f'{rebalance}_closes_{_rf_ticker}'],
+                    lookback=rule.lookback)
+
             elif rule.indicator == 'average_volume':
                 result = GeneratePricesIndicators.call_indicator(FUNCTION_MAPPER['sma'],
                                                                  prices=price_data[f'{rebalance}_volumes'],
@@ -545,6 +583,15 @@ class GeneratePricesIndicators:
                     length=length, which=which,
                 )
                 key = 'vol_bucket_0'  # lookback always 0 (params live in the rule, not the key)
+
+
+            elif rule.indicator == 'vix_close':
+                _vix_ticker = (rule.regime_ticker or 'vix').lower()
+                result = GeneratePricesIndicators.call_indicator(
+                    'vix_close',
+                    stock_closes=price_data[f'{rebalance}_closes'],
+                    market_closes=price_data[f'{rebalance}_closes_{_vix_ticker}'],
+                    lookback=rule.lookback)
             else:
                 continue
 
@@ -978,6 +1025,48 @@ class GeneratePricesIndicators:
                 resume_rules = list(
                     GeneratePricesIndicators.iter_rules_from_tree(getattr(marketRegime, "resume_rules_tree", None)))
 
+                # AER Patch 4: the ticker scan above only covers market-trend /
+                # freeze / resume trees. annualized_excess_return references its
+                # risk-free ticker via rule.params, so load those closes here on
+                # demand (loud-fail if the CSV is missing — never silent).
+                # SPY Patch P4: same for spy_percentile_rank's market_ticker.
+                for _r in (entry_rules + exit_rules):
+                    if _r.indicator == 'annualized_excess_return':
+                        _need_ticker = ((_r.params or {}).get('risk_free_ticker') or 'bil').lower()
+                        _need_for = 'annualized_excess_return'
+                    elif _r.indicator == 'spy_percentile_rank':
+                        _need_ticker = ((_r.params or {}).get('market_ticker') or 'spy').lower()
+                        _need_for = 'spy_percentile_rank'
+                    elif _r.indicator == 'vix_close':
+                        _need_ticker = (_r.regime_ticker or 'vix').lower()
+                        _need_for = 'vix_close'
+                    else:
+                        continue
+                    if price_data.get(f'{strategy.rebalance}_closes_{_need_ticker}') is not None:
+                        continue
+                    try:
+                        if _need_ticker == 'spy':
+                            price_data.update(loader.load_spy_close(rebalance=strategy.rebalance))
+                        else:
+                            price_data.update(loader.load_ticker_close(
+                                ticker=_need_ticker, rebalance=strategy.rebalance))
+                    except Exception as _e:
+                        raise ValueError(
+                            f"{_need_for} needs ticker '{_need_ticker}' but its data "
+                            f"is missing: {_e}. Run generate_index_prices.py --only "
+                            f"{_need_ticker} to create daily_closes_{_need_ticker}.csv.")
+
+                if getattr(marketRegime, 'ranking', None) == 'haer':
+                    _rk_ticker = 'bil'
+                    if price_data.get(f'{strategy.rebalance}_closes_{_rk_ticker}') is None:
+                        try:
+                            price_data.update(loader.load_ticker_close(
+                                ticker=_rk_ticker, rebalance=strategy.rebalance))
+                        except Exception as _e:
+                            raise ValueError(
+                                f"haer ranking needs risk-free ticker '{_rk_ticker}' "
+                                f"but its data is missing: {_e}. Run "
+                                f"generate_index_prices.py --only {_rk_ticker}.")
                 # Entry Indicator Rules
                 GeneratePricesIndicators._compute_rule_indicators(entry_rules, price_data, strategy.rebalance, univ,
                                                                   indictor_Set, crsi_base_path=_crsi_base)

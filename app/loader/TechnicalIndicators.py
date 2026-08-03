@@ -1337,13 +1337,133 @@ class IndicatorCalculator:
 
         return (roll_n == roll_x)
 
+    # AER Patch 3: Annualized Excess Return (entry/exit filter).
+    @staticmethod
+    @register
+    def annualized_excess_return(stock_closes, risk_free_closes, lookback: int = 252):
+        """
+        Annualized Excess Return = stock N-day % return - risk-free N-day % return.
+
+        Mirrors the Rotational reference exactly:
+            stock_returns    = daily_closes.pct_change(lookback) * 100
+            risk_free_returns = risk_free_closes.pct_change(lookback) * 100
+            AER              = stock_returns - risk_free_returns
+
+        Parameters
+        ----------
+        stock_closes : pd.DataFrame
+            Daily closes, one column per ticker in the universe.
+        risk_free_closes : pd.DataFrame or pd.Series
+            Daily closes of the risk-free proxy (single series). If a DataFrame
+            is passed, its first column is used (matches the closes_spy pattern).
+        lookback : int
+            Return window in trading days (252 = 1 year). Trader-configurable.
+
+        Returns
+        -------
+        pd.DataFrame
+            AER in percentage points, aligned to stock_closes.
+        """
+        # 100 = percentage-point convention; the rule threshold (e.g. 4 = 4%)
+        # is defined against this, so it is a unit convention, not a strategy knob.
+        stock_returns = stock_closes.pct_change(lookback) * 100
+
+        if hasattr(risk_free_closes, "columns"):
+            rf_series = risk_free_closes.iloc[:, 0]
+        else:
+            rf_series = risk_free_closes
+        risk_free_returns = rf_series.pct_change(lookback) * 100
+
+        # Subtract the single risk-free series from every stock column, aligned on date.
+        return stock_returns.sub(risk_free_returns, axis=0)
+
+    @staticmethod
+    @register
+    def spy_percentile_rank(stock_closes, market_closes, lookback: int = 52,
+                            lookback_unit: str = "weeks", window_mode: str = "legacy"):
+        """
+        For each period, the % of the last N index closes that sit BELOW today's
+        close (0-100). High = index near range highs; low = near range lows.
+
+        Mirrors the Rotational reference when window_mode='legacy':
+            last = spy_weekly.iloc[i-(lookback-1) : i]   # lookback-1 prior weeks
+            count = (today > last).sum()
+            pct = count / lookback * 100                 # divides by lookback
+
+        window_mode='standard' uses a clean percentile: lookback prior closes
+        divided by lookback (max reaches 100).
+        """
+        import pandas as _pd
+
+        mkt = market_closes.iloc[:, 0] if hasattr(market_closes, "columns") else market_closes
+
+        unit = (lookback_unit or "weeks").lower().strip()
+        mode = (window_mode or "legacy").lower().strip()
+
+        # Resample the index to the chosen unit.
+        if unit == "weeks":
+            # Last trading day of each week, keeping REAL trading-day dates so the
+            # weekly index stays a subset of the daily index (matches the original
+            # spy_weekly reindex+ffill exactly). resample("W") would emit Sunday
+            # labels that aren't trading days, so a later reindex(daily) drops
+            # every value -> all NaN. Grouping by ISO week and taking the last
+            # actual date avoids that calendar drift.
+            _last = (_pd.Series(mkt.index, index=mkt.index)
+                     .groupby(mkt.index.to_period("W")).last())
+            series = mkt.loc[_last.values]
+        else:
+            series = mkt
+
+        divisor = int(lookback)
+        # legacy compares (lookback-1) prior closes but still divides by lookback.
+        window = (divisor - 1) if mode == "legacy" else divisor
+
+        vals = series.values
+        pct = _pd.Series(index=series.index, dtype="float64")
+        for i in range(len(series)):
+            if i < divisor:  # need `divisor` history before first reading
+                continue
+            today = vals[i]
+            prior = vals[i - window:i]  # `window` prior closes (excludes today)
+            count_below = (today > prior).sum()
+            pct.iloc[i] = (count_below / divisor) * 100.0
+
+        # Broadcast the market-wide value across every stock column, then reindex
+        # to the (daily) stock index and forward-fill — matches spy_52_df logic.
+        result = _pd.DataFrame(index=series.index, columns=stock_closes.columns, dtype="float64")
+        for _col in result.columns:
+            result[_col] = pct.values
+        return result.reindex(stock_closes.index).ffill()
+
+    @staticmethod
+    @register
+    def haer(stock_closes, risk_free_closes, lookback: int = 252):
+        stock_returns = stock_closes.pct_change()
+        rf_series = risk_free_closes.iloc[:, 0] if hasattr(risk_free_closes, "columns") else risk_free_closes
+        rf_returns = rf_series.pct_change()
+        excess = stock_returns.sub(rf_returns, axis=0)
+        log_excess = np.log(1 + excess)
+        ma = log_excess.rolling(window=lookback, min_periods=lookback).mean()
+        return np.exp(ma * 252) - 1
+
+    @staticmethod
+    @register
+    def vix_close(stock_closes, market_closes, lookback: int = 0):
+        import pandas as _pd
+        mkt = market_closes.iloc[:, 0] if hasattr(market_closes, "columns") else market_closes
+        aligned = mkt.reindex(stock_closes.index).ffill()
+        result = _pd.DataFrame(index=stock_closes.index, columns=stock_closes.columns, dtype="float64")
+        for _col in result.columns:
+            result[_col] = aligned.values
+        return result
+
 '''
 
 
 # NOTE: 3 = RSI Period length, 2 = UpDown Length: The number of consecutive days that a security price has either closed up (higher than previous day) or closed down (lower than previous days)
-    #       100 = Rate of change (ROC) period
-    # For each of the 3 parameters I have given them the letter p to denote 'parameter'
-    user.entry_crsi_entry_p1 = 3
-    user.entry_crsi_entry_p2 = 2
-    user.entry_crsi_entry_p3 = 100
+#       100 = Rate of change (ROC) period
+# For each of the 3 parameters I have given them the letter p to denote 'parameter'
+user.entry_crsi_entry_p1 = 3
+user.entry_crsi_entry_p2 = 2
+user.entry_crsi_entry_p3 = 100
 '''
